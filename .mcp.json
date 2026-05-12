@@ -1,0 +1,9 @@
+{
+  "claude-unreal": {
+    "command": "node",
+    "args": ["${CLAUDE_PLUGIN_ROOT}/mcp-server/dist/index.js"],
+    "env": {
+      "PLUGIN_ROOT": "${CLAUDE_PLUGIN_ROOT}"
+    }
+  }
+}

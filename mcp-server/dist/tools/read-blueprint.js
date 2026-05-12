@@ -1,0 +1,64 @@
+import { z } from "zod";
+import { join } from "node:path";
+import { detectProject, normalizeToAssetPath } from "../ue-bridge/project-detector.js";
+import { runPythonInUE } from "../ue-bridge/python-runner.js";
+import { formatBlueprintAsMarkdown, validateBlueprintJson, } from "../parsers/blueprint-json.js";
+const pluginRoot = process.env.PLUGIN_ROOT || process.cwd();
+export function registerReadBlueprintTool(server) {
+    server.tool("read-blueprint", "Read a specific Unreal Engine blueprint and return its variables, functions, event graph logic, and components as structured text. Accepts asset paths (/Game/Blueprints/BP_Player) or file paths.", {
+        projectPath: z
+            .string()
+            .describe("Absolute path to the UE project directory"),
+        blueprintPath: z
+            .string()
+            .describe("Asset path (e.g., /Game/Blueprints/BP_Player) or file path to the blueprint"),
+        detail: z
+            .enum(["summary", "full", "graph-only"])
+            .default("full")
+            .describe("Level of detail: summary (vars/funcs only), full (everything including graphs), graph-only (just node graphs)"),
+    }, async ({ projectPath, blueprintPath, detail }) => {
+        try {
+            const project = detectProject(projectPath);
+            const assetPath = normalizeToAssetPath(blueprintPath, project);
+            const scriptPath = join(pluginRoot, "python-scripts", "extract_blueprint.py");
+            const result = await runPythonInUE(project, scriptPath, {
+                asset_path: assetPath,
+            });
+            if (!result.success || !result.data) {
+                return {
+                    content: [
+                        {
+                            type: "text",
+                            text: `Failed to read blueprint '${assetPath}'.\n\nError: ${result.errorSummary ?? result.stderr ?? "Unknown error"}\n\nCommon causes:\n- The asset path may be incorrect\n- The blueprint may have compilation errors\n- The UE editor may have failed to load the project`,
+                        },
+                    ],
+                };
+            }
+            if (!validateBlueprintJson(result.data)) {
+                return {
+                    content: [
+                        {
+                            type: "text",
+                            text: `Blueprint data for '${assetPath}' was returned but has an unexpected format.\n\nRaw data: ${JSON.stringify(result.data, null, 2).substring(0, 2000)}`,
+                        },
+                    ],
+                };
+            }
+            const markdown = formatBlueprintAsMarkdown(result.data, detail);
+            return {
+                content: [{ type: "text", text: markdown }],
+            };
+        }
+        catch (err) {
+            return {
+                content: [
+                    {
+                        type: "text",
+                        text: `Error: ${err instanceof Error ? err.message : String(err)}`,
+                    },
+                ],
+            };
+        }
+    });
+}
+//# sourceMappingURL=read-blueprint.js.map

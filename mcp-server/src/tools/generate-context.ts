@@ -1,0 +1,157 @@
+import { z } from "zod";
+import { join } from "node:path";
+import { writeFileSync } from "node:fs";
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { detectProject } from "../ue-bridge/project-detector.js";
+import { runPythonInUE } from "../ue-bridge/python-runner.js";
+import {
+  scanProjectStructure,
+  formatProjectOverview,
+} from "../parsers/project-structure.js";
+import type { BlueprintListEntry, ClassHierarchyNode } from "../types/blueprint.js";
+
+const pluginRoot = process.env.PLUGIN_ROOT || process.cwd();
+
+export function registerGenerateContextTool(server: McpServer): void {
+  server.tool(
+    "generate-context",
+    "Generate a comprehensive UNREAL_CONTEXT.md file for a UE project, including project overview, blueprint inventory, and class hierarchy.",
+    {
+      projectPath: z
+        .string()
+        .describe("Absolute path to the UE project directory"),
+      outputPath: z
+        .string()
+        .optional()
+        .describe(
+          "Where to write the context file. Defaults to UNREAL_CONTEXT.md in the project root.",
+        ),
+      sections: z
+        .array(
+          z.enum(["overview", "blueprints", "classes", "hierarchy"]),
+        )
+        .default(["overview", "blueprints", "classes", "hierarchy"])
+        .describe("Which sections to include"),
+    },
+    async ({ projectPath, outputPath, sections }) => {
+      try {
+        const project = detectProject(projectPath);
+        const contextLines: string[] = [];
+
+        // Project overview (filesystem-based, no UE needed)
+        if (sections.includes("overview")) {
+          const overview = scanProjectStructure(project);
+          contextLines.push(formatProjectOverview(overview));
+          contextLines.push("");
+        }
+
+        // Blueprint inventory (requires UE)
+        let blueprints: BlueprintListEntry[] | null = null;
+        if (sections.includes("blueprints")) {
+          const listScript = join(pluginRoot, "python-scripts", "list_blueprints.py");
+          const listResult = await runPythonInUE(project, listScript);
+
+          if (listResult.success && listResult.data) {
+            blueprints = listResult.data as BlueprintListEntry[];
+            contextLines.push("## Blueprint Inventory");
+            contextLines.push("");
+            contextLines.push(`Total: ${blueprints.length} blueprint(s)`);
+            contextLines.push("");
+
+            // Group by directory
+            const byDir: Record<string, BlueprintListEntry[]> = {};
+            for (const bp of blueprints) {
+              const parts = bp.assetPath.split("/");
+              const dir = parts.slice(0, -1).join("/");
+              if (!byDir[dir]) byDir[dir] = [];
+              byDir[dir].push(bp);
+            }
+
+            for (const [dir, bps] of Object.entries(byDir).sort()) {
+              contextLines.push(`### ${dir}`);
+              for (const bp of bps) {
+                contextLines.push(
+                  `- **${bp.className}** — extends ${bp.parentClass} [${bp.type}]`,
+                );
+              }
+              contextLines.push("");
+            }
+          } else {
+            contextLines.push(
+              "## Blueprint Inventory",
+              "",
+              "*Failed to extract blueprint list. Ensure UE can load the project headlessly.*",
+              "",
+            );
+          }
+        }
+
+        // Class hierarchy (requires UE)
+        if (sections.includes("hierarchy")) {
+          const hierarchyScript = join(
+            pluginRoot,
+            "python-scripts",
+            "extract_class_hierarchy.py",
+          );
+          const hierarchyResult = await runPythonInUE(project, hierarchyScript);
+
+          if (hierarchyResult.success && hierarchyResult.data) {
+            const hierarchy = hierarchyResult.data as ClassHierarchyNode[];
+            contextLines.push("## Class Hierarchy");
+            contextLines.push("");
+            contextLines.push("```");
+            formatHierarchyTree(hierarchy, contextLines, 0);
+            contextLines.push("```");
+            contextLines.push("");
+          } else {
+            contextLines.push(
+              "## Class Hierarchy",
+              "",
+              "*Failed to extract class hierarchy.*",
+              "",
+            );
+          }
+        }
+
+        const contextContent = contextLines.join("\n");
+
+        // Write to file if output path specified
+        const outFile = outputPath || join(project.projectPath, "UNREAL_CONTEXT.md");
+        writeFileSync(outFile, contextContent, "utf-8");
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Context file generated at: ${outFile}\n\n${contextContent}`,
+            },
+          ],
+        };
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Error: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          ],
+        };
+      }
+    },
+  );
+}
+
+function formatHierarchyTree(
+  nodes: ClassHierarchyNode[],
+  lines: string[],
+  indent: number,
+): void {
+  for (const node of nodes) {
+    const prefix = "  ".repeat(indent);
+    const pathNote = node.assetPath ? ` (${node.assetPath})` : "";
+    lines.push(`${prefix}${node.className}${pathNote}`);
+    if (node.children.length > 0) {
+      formatHierarchyTree(node.children, lines, indent + 1);
+    }
+  }
+}

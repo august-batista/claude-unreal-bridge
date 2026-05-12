@@ -1,0 +1,9 @@
+{
+  "name": "claude-unreal",
+  "version": "0.1.0",
+  "description": "Read, understand, and work with Unreal Engine blueprint code from Claude Code",
+  "author": {
+    "name": "August"
+  },
+  "keywords": ["unreal-engine", "blueprints", "game-development", "visual-scripting"]
+}
