@@ -1,5 +1,6 @@
 export interface BlueprintPin {
   name: string;
+  pinId?: string;
   direction: "input" | "output";
   type: string;
   subtype?: string;

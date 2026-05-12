@@ -117,6 +117,7 @@ def _parse_pin(pin_str):
         return m.group(1) if m else default
 
     name      = rget(r'PinName="([^"]*)"')
+    pin_id    = rget(r'PinId=([A-F0-9]{32})')
     direction = 'output' if 'Output' in rget(r'Direction="([^"]*)"') else 'input'
     hidden    = rget(r'bHidden=(True|False)') == 'True'
 
@@ -139,15 +140,18 @@ def _parse_pin(pin_str):
     default_val  = rget(r'DefaultValue="([^"]*)"')
     show_default = default_val if default_val else None
 
-    # Connections: LinkedTo=(NodeName PinGuid,)
+    # Connections: LinkedTo=(NodeName PinGuid,). Encode each as "NodeName#PinId"
+    # so the formatter can resolve the source pin by GUID (needed to follow
+    # data wires through reroute/knot nodes and surface the real source).
     connected_to = []
     lm = re.search(r'LinkedTo=\(([^)]+)\)', pin_str)
     if lm:
-        for nm in re.finditer(r'(\w+)\s+[A-F0-9]{32}', lm.group(1)):
-            connected_to.append(nm.group(1))
+        for m in re.finditer(r'(\w+)\s+([A-F0-9]{32})', lm.group(1)):
+            connected_to.append(f'{m.group(1)}#{m.group(2)}')
 
     pin = {
         'name': name,
+        'pinId': pin_id,
         'direction': direction,
         'type': pin_type,
         'connectedTo': connected_to,
@@ -312,6 +316,7 @@ def _make_node(name, cls, props, pins):
             continue
         cp = {
             'name':        p['name'],
+            'pinId':       p.get('pinId'),
             'direction':   p['direction'],
             'type':        p['type'],
             'connectedTo': p['connectedTo'],

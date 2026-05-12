@@ -2,9 +2,12 @@ import type {
   BlueprintInfo,
   BlueprintGraph,
   BlueprintNode,
+  BlueprintPin,
   BlueprintFunction,
   BlueprintComponent,
 } from "../types/blueprint.js";
+
+type PinLookup = Map<string, { node: BlueprintNode; pin: BlueprintPin }>;
 
 /**
  * Format a BlueprintInfo as human-readable markdown text.
@@ -118,6 +121,16 @@ function collectCustomEventNames(bp: BlueprintInfo): Set<string> {
   return names;
 }
 
+function buildPinLookup(nodes: BlueprintNode[]): PinLookup {
+  const lookup: PinLookup = new Map();
+  for (const node of nodes) {
+    for (const pin of node.pins) {
+      if (pin.pinId) lookup.set(pin.pinId, { node, pin });
+    }
+  }
+  return lookup;
+}
+
 function formatEventGraph(
   graph: BlueprintGraph,
   lines: string[],
@@ -145,11 +158,12 @@ function formatEventGraph(
   }
 
   const nodeMap = new Map(graph.nodes.map((n) => [n.id, n]));
+  const pinLookup = buildPinLookup(graph.nodes);
 
   for (const entry of entryNodes) {
     lines.push(`### ${entry.title}`, "");
     lines.push("```");
-    traceExecutionFlow(entry, nodeMap, lines, 0, new Set(), customEventNames);
+    traceExecutionFlow(entry, nodeMap, pinLookup, lines, 0, new Set(), customEventNames);
     lines.push("```", "");
   }
 }
@@ -174,6 +188,7 @@ function formatFunctionBody(
   }
 
   const nodeMap = new Map(fn.nodes.map((n) => [n.id, n]));
+  const pinLookup = buildPinLookup(fn.nodes);
   const execOut = entryNode.pins.find(
     (p) =>
       p.direction === "output" && p.type === "exec" && p.connectedTo.length > 0,
@@ -184,7 +199,7 @@ function formatFunctionBody(
     const nextId = extractNodeId(execOut.connectedTo[0]);
     const next = nodeMap.get(nextId);
     if (next) {
-      traceExecutionFlow(next, nodeMap, lines, 0, new Set(), customEventNames);
+      traceExecutionFlow(next, nodeMap, pinLookup, lines, 0, new Set(), customEventNames);
     }
   } else {
     lines.push("(empty body)");
@@ -195,6 +210,7 @@ function formatFunctionBody(
 function traceExecutionFlow(
   node: BlueprintNode,
   nodeMap: Map<string, BlueprintNode>,
+  pinLookup: PinLookup,
   lines: string[],
   indent: number,
   visited: Set<string>,
@@ -207,7 +223,7 @@ function traceExecutionFlow(
   visited.add(node.id);
 
   const prefix = "  ".repeat(indent);
-  lines.push(`${prefix}${describeNode(node, customEventNames)}`);
+  lines.push(`${prefix}${describeNode(node, customEventNames, nodeMap, pinLookup)}`);
 
   const execOutputs = node.pins.filter(
     (p) => p.direction === "output" && p.type === "exec" && p.connectedTo.length > 0,
@@ -217,7 +233,7 @@ function traceExecutionFlow(
     const nextNodeId = extractNodeId(execOutputs[0].connectedTo[0]);
     const nextNode = nodeMap.get(nextNodeId);
     if (nextNode) {
-      traceExecutionFlow(nextNode, nodeMap, lines, indent, visited, customEventNames);
+      traceExecutionFlow(nextNode, nodeMap, pinLookup, lines, indent, visited, customEventNames);
     }
   } else if (execOutputs.length > 1) {
     for (const pin of execOutputs) {
@@ -230,6 +246,7 @@ function traceExecutionFlow(
           traceExecutionFlow(
             nextNode,
             nodeMap,
+            pinLookup,
             lines,
             indent + 1,
             visited,
@@ -241,9 +258,43 @@ function traceExecutionFlow(
   }
 }
 
+/**
+ * Walk a data wire back through any reroute (knot) nodes to find the real
+ * upstream source. Returns the source node and pin name, or null if the
+ * chain dead-ends.
+ */
+function resolveDataSource(
+  ref: string,
+  nodeMap: Map<string, BlueprintNode>,
+  pinLookup: PinLookup,
+  visited: Set<string> = new Set(),
+): { node: BlueprintNode; pinName?: string } | null {
+  if (visited.has(ref)) return null;
+  visited.add(ref);
+
+  const { nodeId, pinId } = parseConnRef(ref);
+  const node = nodeMap.get(nodeId);
+  if (!node) return null;
+
+  if (node.type === "K2Node_Knot") {
+    const input = node.pins.find((p) => p.direction === "input");
+    if (!input || input.connectedTo.length === 0) return null;
+    return resolveDataSource(input.connectedTo[0], nodeMap, pinLookup, visited);
+  }
+
+  let pinName: string | undefined;
+  if (pinId) {
+    const hit = pinLookup.get(pinId);
+    if (hit) pinName = hit.pin.name;
+  }
+  return { node, pinName };
+}
+
 function describeNode(
   node: BlueprintNode,
   customEventNames: Set<string>,
+  nodeMap: Map<string, BlueprintNode>,
+  pinLookup: PinLookup,
 ): string {
   const dataInputs = node.pins.filter(
     (p) => p.direction === "input" && p.type !== "exec",
@@ -251,7 +302,16 @@ function describeNode(
 
   const argStr = dataInputs
     .map((p) => {
-      if (p.connectedTo.length > 0) return `${p.name}=<connected>`;
+      if (p.connectedTo.length > 0) {
+        const src = resolveDataSource(p.connectedTo[0], nodeMap, pinLookup);
+        if (src) {
+          const srcLabel = src.pinName
+            ? `${src.node.title}.${src.pinName}`
+            : src.node.title;
+          return `${p.name}=<from ${srcLabel}>`;
+        }
+        return `${p.name}=<connected>`;
+      }
       if (p.defaultValue) return `${p.name}=${p.defaultValue}`;
       return null;
     })
@@ -304,8 +364,16 @@ function formatNode(node: BlueprintNode): string {
 }
 
 function extractNodeId(connectionRef: string): string {
-  const dotIndex = connectionRef.indexOf(".");
-  return dotIndex >= 0 ? connectionRef.substring(0, dotIndex) : connectionRef;
+  return parseConnRef(connectionRef).nodeId;
+}
+
+function parseConnRef(ref: string): { nodeId: string; pinId?: string } {
+  const hashIdx = ref.indexOf("#");
+  if (hashIdx >= 0) {
+    return { nodeId: ref.substring(0, hashIdx), pinId: ref.substring(hashIdx + 1) };
+  }
+  const dotIdx = ref.indexOf(".");
+  return { nodeId: dotIdx >= 0 ? ref.substring(0, dotIdx) : ref };
 }
 
 /**
