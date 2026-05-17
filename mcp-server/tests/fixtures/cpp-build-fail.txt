@@ -1,0 +1,15 @@
+[1/8] Compile [arm64] Sandbox.cpp
+[2/8] Compile [arm64] SandboxSanityTest.cpp
+/Users/august/Documents/claude-unreal/sandbox-project/Source/Sandbox/Sandbox.cpp:5:10: fatal error: 'NotARealHeader.h' file not found
+#include "NotARealHeader.h"
+         ^~~~~~~~~~~~~~~~~~
+/Users/august/Documents/claude-unreal/sandbox-project/Source/Sandbox/Tests/SandboxSanityTest.cpp:18:5: error: use of undeclared identifier 'BadFunc'
+    BadFunc();
+    ^
+/Users/august/Documents/claude-unreal/sandbox-project/Source/Sandbox/Tests/SandboxSanityTest.cpp:25:9: warning: unused variable 'foo' [-Wunused-variable]
+    int foo = 1;
+        ^
+1 warning and 2 errors generated.
+ERROR: UnrealBuildTool failed. See log for details.
+ERROR: UnrealBuildTool failed. See log for details.
+Error: 0 errors, 1 warnings

@@ -3,3 +3,16 @@ node_modules/
 __pycache__/
 *.pyc
 .DS_Store
+
+# Sandbox UE project (test fixture, generated artefacts only)
+sandbox-project/Binaries/
+sandbox-project/Build/
+sandbox-project/DerivedDataCache/
+sandbox-project/Intermediate/
+sandbox-project/Saved/
+sandbox-project/.vs/
+sandbox-project/*.sln
+sandbox-project/*.xcworkspace/
+
+# Machine-specific verification scripts (point at user projects, not the sandbox)
+mcp-server/tests/verify-bearships-*.js

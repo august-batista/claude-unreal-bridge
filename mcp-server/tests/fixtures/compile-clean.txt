@@ -1,0 +1,11 @@
+LogInit: Display: Starting Game.
+LogPython: Initializing Python 3.11.10...
+LogModuleManager: Display: Found 23 unique non-project modules
+LogStreaming: Warning: AssetA depends on missing class
+LogInit: Error: Could not find file for short package name: foo (this is a startup noise line we should NOT count as a compile error)
+LogCompileAllBlueprintsCommandlet: Display: Compiling Blueprints
+LogBlueprint: Display: Compiling /Game/Blueprints/BP_PlayerCharacter
+LogBlueprint: Display: Compiling /Game/Blueprints/BP_GameMode
+LogCompileAllBlueprintsCommandlet: Display: Total Successful Blueprints: 2
+LogCompileAllBlueprintsCommandlet: Display: Total Failed Blueprints: 0
+LogCompileAllBlueprintsCommandlet: Display: Total Time spent: 1.23s

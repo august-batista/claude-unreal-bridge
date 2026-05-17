@@ -1,0 +1,15 @@
+Setting up bundled DotNet SDK
+/Users/Shared/Epic Games/UE_5.7/Engine/Binaries/ThirdParty/DotNet/8.0.412/mac-arm64
+Running dotnet Engine/Binaries/DotNET/UnrealBuildTool/UnrealBuildTool.dll SandboxEditor Mac Development -Project=/Users/august/Documents/claude-unreal/sandbox-project/Sandbox.uproject -WaitMutex -NoHotReload
+Log file: /Users/august/Library/Application Support/Epic/UnrealBuildTool/Log.txt
+Using 'git status' to determine working set for adaptive non-unity build (/Users/august/Documents/claude-unreal).
+Creating makefile for SandboxEditor (no existing makefile)
+Warning: [Upgrade]
+Warning: [Upgrade] Using backward-compatible build settings.
+Warning: [Upgrade] Suppress this message by setting 'DefaultBuildSettings = BuildSettingsVersion.V6;' in SandboxEditor.Target.cs, and explicitly overriding settings that differ from the new defaults.
+Wrote partial receipt to /Users/august/Documents/claude-unreal/sandbox-project/Binaries/Mac/SandboxEditor.target
+SandboxEditor modifies the values of properties: [ UndefinedIdentifierWarningLevel: Off != Error ]. This is not allowed, as SandboxEditor has build products in common with UnrealEditor.
+Remove the modified setting, change SandboxEditor to use a unique build environment by setting 'BuildEnvironment = TargetBuildEnvironment.Unique;' in the SandboxEditorTarget constructor, or set bOverrideBuildEnvironment = true to force this setting on.
+
+Result: Failed (OtherCompilationError)
+Total execution time: 0.99 seconds

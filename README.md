@@ -1,20 +1,48 @@
 # claude-unreal-bridge
 
-Claude Code plugin that exposes Unreal Engine Blueprint internals as structured text. Runs Python scripts inside the UE editor (headlessly) via MCP tools, hands Claude back JSON, and renders it as markdown the model can reason about.
+Claude Code plugin that reads, builds, tests, and observes Unreal Engine
+projects from the command line. Runs Python scripts and editor commandlets
+inside the UE editor headlessly via MCP, hands Claude back JSON/structured
+text it can reason about.
 
-Tested against Unreal Engine 5.5+.
+Tested against Unreal Engine 5.5+ (5.7 in dev).
 
 ## What it provides
 
-- **MCP tools**: `list-blueprints`, `read-blueprint`, `search-blueprints`, `compile-blueprints`, `generate-context`, `read-asset`
-- **Slash commands**: `/ue-scan`, `/ue-read`, `/ue-compile`
-- **Skills**: `blueprint-reader`, `blueprint-compiler`, `context-generator`
-- **Agent**: `blueprint-architect`
+### MCP tools
+
+**Read / inspect**
+`list-blueprints`, `read-blueprint`, `search-blueprints`,
+`list-class-properties`, `read-asset`, `generate-context`
+
+**Mutate**
+`set-blueprint-property`, `set-blueprint-properties`
+
+**Build / compile**
+`build-cpp` (UnrealBuildTool), `compile-blueprints` (CompileAllBlueprints commandlet)
+
+**Run / test / observe**
+`run-tests` (Automation framework), `run-scenario` (headless map run with console
+commands), `read-logs` (Saved/Logs/<Project>.log with category/severity/regex filtering)
+
+### Slash commands
+`/ue-scan`, `/ue-read`, `/ue-build`, `/ue-compile`, `/ue-test`,
+`/ue-scenario`, `/ue-logs`
+
+### Skills
+`blueprint-reader`, `blueprint-compiler`, `gameplay-tester`,
+`context-generator`
+
+### Agents
+- `blueprint-architect` — cross-blueprint analysis and architectural review
+- `feature-verifier` — runs the full build → compile → tests → scenario → log-triage pipeline after a feature change and reports a structured pass/fail verdict with evidence
 
 ## Requirements
 
 - Unreal Engine 5.5+ with a `.uproject` you want to inspect
 - Node.js (to build the MCP server)
+- For C++ tools: matching toolchain installed (Xcode on macOS, MSVC on
+  Windows, clang on Linux)
 
 ## Install
 
@@ -30,6 +58,14 @@ Then load as a Claude Code plugin:
 ```bash
 claude --plugin-dir ~/Developer/claude-unreal-bridge
 ```
+
+## Sandbox project
+
+`sandbox-project/` is a minimal Blueprints+C++ UE project for verifying
+the tools end-to-end. Includes two fixture automation tests
+(`Sandbox.Sanity.AlwaysPasses`, `Sandbox.NegativeFixture.AlwaysFails`)
+that exercise both code paths in the test report parser. Generated
+folders are gitignored.
 
 ## Related repos
 

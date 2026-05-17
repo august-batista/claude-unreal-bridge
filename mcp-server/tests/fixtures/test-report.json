@@ -1,0 +1,34 @@
+{
+  "devices": [{ "deviceName": "Mac" }],
+  "reportCreatedOn": "2026-05-15T14:00:00Z",
+  "succeeded": 1,
+  "failed": 1,
+  "notRun": 0,
+  "totalDuration": 0.123,
+  "tests": [
+    {
+      "fullTestPath": "Sandbox.Sanity.AlwaysPasses",
+      "testDisplayName": "AlwaysPasses",
+      "state": "Success",
+      "duration": 0.001,
+      "entries": []
+    },
+    {
+      "fullTestPath": "Sandbox.NegativeFixture.AlwaysFails",
+      "testDisplayName": "AlwaysFails",
+      "state": "Fail",
+      "duration": 0.122,
+      "entries": [
+        {
+          "event": {
+            "type": "Error",
+            "message": "Intentional failure: this fixture validates the run-tests parser handles errors."
+          },
+          "filename": "/path/to/SandboxSanityTest.cpp",
+          "lineNumber": 35,
+          "timestamp": "2026-05-15T14:00:00Z"
+        }
+      ]
+    }
+  ]
+}

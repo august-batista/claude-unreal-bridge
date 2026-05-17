@@ -1,6 +1,10 @@
 import { spawn } from "node:child_process";
-import type { UEProject, CompileResult, CompileMessage } from "../types/ue-project.js";
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+import type { UEProject, CompileResult } from "../types/ue-project.js";
 import { findBestInstallation } from "./engine-locator.js";
+import { parseCompileOutput } from "../parsers/compile-output.js";
+import { defaultProjectLogPath } from "./project-detector.js";
 
 const DEFAULT_TIMEOUT_MS = 300_000; // 5 minutes for compilation
 
@@ -28,6 +32,16 @@ export async function runCommandlet(
   }
 
   const editorCmd = installation.editorCmdPath;
+
+  // Pin the log destination so `read-logs` can find compile output.
+  const callerSetAbsLog = extraArgs.some((a) => /^-AbsLog=/i.test(a));
+  const autoLog: string[] = [];
+  if (!callerSetAbsLog) {
+    const logPath = defaultProjectLogPath(project);
+    try { mkdirSync(dirname(logPath), { recursive: true }); } catch { /* may already exist */ }
+    autoLog.push(`-AbsLog=${logPath}`);
+  }
+
   const spawnArgs = [
     project.uprojectFile,
     `-Run=${commandlet}`,
@@ -36,6 +50,7 @@ export async function runCommandlet(
     `-nullrhi`,
     `-nosound`,
     `-nopause`,
+    ...autoLog,
     ...extraArgs,
   ];
 
@@ -110,57 +125,5 @@ export async function compileAllBlueprints(
 ): Promise<CompileResult> {
   const args = projectOnly ? ["-ProjectOnly"] : [];
   const result = await runCommandlet(project, "CompileAllBlueprints", args);
-
-  return parseCompileOutput(result);
-}
-
-function parseCompileOutput(result: CommandletResult): CompileResult {
-  const errors: CompileMessage[] = [];
-  const warnings: CompileMessage[] = [];
-  const output = result.stdout + "\n" + result.stderr;
-
-  const lines = output.split("\n");
-  for (const line of lines) {
-    // Match blueprint compilation errors
-    // Typical format: "Error: [Blueprint /Game/Path/BP_Name] Description"
-    const errorMatch = line.match(
-      /Error:?\s*(?:\[(?:Blueprint\s+)?([^\]]+)\])?\s*(.*)/i,
-    );
-    if (errorMatch) {
-      errors.push({
-        blueprint: errorMatch[1] || undefined,
-        message: errorMatch[2] || line,
-        severity: "error",
-        line: line.trim(),
-      });
-      continue;
-    }
-
-    // Match warnings
-    const warnMatch = line.match(
-      /Warning:?\s*(?:\[(?:Blueprint\s+)?([^\]]+)\])?\s*(.*)/i,
-    );
-    if (warnMatch) {
-      warnings.push({
-        blueprint: warnMatch[1] || undefined,
-        message: warnMatch[2] || line,
-        severity: "warning",
-        line: line.trim(),
-      });
-    }
-  }
-
-  const totalIssues = errors.length + warnings.length;
-  const summary = result.success
-    ? totalIssues === 0
-      ? "All blueprints compiled successfully with no errors or warnings."
-      : `Compilation completed with ${errors.length} error(s) and ${warnings.length} warning(s).`
-    : `Compilation failed with ${errors.length} error(s) and ${warnings.length} warning(s).`;
-
-  return {
-    success: result.success && errors.length === 0,
-    errors,
-    warnings,
-    summary,
-  };
+  return parseCompileOutput(result.stdout, result.stderr, result.exitCode);
 }

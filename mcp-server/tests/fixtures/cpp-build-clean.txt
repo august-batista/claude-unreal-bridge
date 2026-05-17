@@ -1,0 +1,6 @@
+[1/4] Compile [arm64] Sandbox.cpp
+[2/4] Compile [arm64] SandboxSanityTest.cpp
+[3/4] Link [arm64] UnrealEditor-Sandbox.dylib
+[4/4] WriteMetadata Sandbox.target
+Total time in Parallel executor: 1.42 seconds
+Total execution time: 3.18 seconds

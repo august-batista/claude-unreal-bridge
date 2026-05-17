@@ -15,6 +15,18 @@ const RUN_UAT_PATHS = {
     win32: "Engine/Build/BatchFiles/RunUAT.bat",
     linux: "Engine/Build/BatchFiles/RunUAT.sh",
 };
+// Platform-specific Build.sh / Build.bat — drives UBT for a single target.
+const BUILD_SCRIPT_PATHS = {
+    darwin: "Engine/Build/BatchFiles/Mac/Build.sh",
+    win32: "Engine/Build/BatchFiles/Build.bat",
+    linux: "Engine/Build/BatchFiles/Linux/Build.sh",
+};
+// Default platform name as UBT/UE expects it.
+export const HOST_PLATFORM = {
+    darwin: "Mac",
+    win32: "Win64",
+    linux: "Linux",
+};
 let cachedInstallations = null;
 export function findUEInstallations() {
     if (cachedInstallations)
@@ -67,17 +79,25 @@ export function findBestInstallation(targetVersion) {
 function tryParseInstallation(enginePath, platform) {
     const editorCmdRel = EDITOR_CMD_PATHS[platform];
     const runUATRel = RUN_UAT_PATHS[platform];
-    if (!editorCmdRel || !runUATRel)
+    const buildScriptRel = BUILD_SCRIPT_PATHS[platform];
+    if (!editorCmdRel || !runUATRel || !buildScriptRel)
         return null;
     const editorCmdPath = join(enginePath, editorCmdRel);
     const runUATPath = join(enginePath, runUATRel);
+    const buildScriptPath = join(enginePath, buildScriptRel);
     if (!existsSync(editorCmdPath))
         return null;
     // Extract version from directory name (UE_5.7 -> 5.7)
     const dirName = enginePath.split("/").pop() || "";
     const versionMatch = dirName.match(/UE_(\d+\.\d+(?:\.\d+)?)/);
     const version = versionMatch ? versionMatch[1] : "unknown";
-    return { version, path: enginePath, editorCmdPath, runUATPath };
+    return {
+        version,
+        path: enginePath,
+        editorCmdPath,
+        runUATPath,
+        buildScriptPath,
+    };
 }
 function compareVersions(a, b) {
     const pa = a.split(".").map(Number);

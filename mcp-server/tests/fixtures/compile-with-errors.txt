@@ -1,0 +1,16 @@
+LogInit: Display: Starting Game.
+LogStreaming: Warning: AssetX depends on missing class (startup noise)
+LogInit: Error: Failed to find module - this is unrelated to compilation
+LogCompileAllBlueprintsCommandlet: Display: Compiling Blueprints
+LogBlueprint: Compiling /Game/Blueprints/BP_PlayerCharacter
+LogBlueprint: Error: [AssetLog] /Game/Blueprints/BP_PlayerCharacter.BP_PlayerCharacter: Variable 'MaxHealth' references missing type Float
+LogK2Compiler: Error: [AssetLog] /Game/Blueprints/BP_GameMode.BP_GameMode: Cannot find function 'StartMatch' on class 'AGameMode'
+LogBlueprint: Warning: [AssetLog] /Game/Blueprints/BP_PlayerCharacter.BP_PlayerCharacter: Unused local variable 'temp'
+LogBlueprint: Error: [AssetLog] /Game/Blueprints/BP_PlayerCharacter.BP_PlayerCharacter: Variable 'MaxHealth' references missing type Float
+LogCompileAllBlueprintsCommandlet: Display: Total Successful Blueprints: 1
+LogCompileAllBlueprintsCommandlet: Display: Total Failed Blueprints: 2
+LogCompileAllBlueprintsCommandlet: Display: Failed Blueprint Names:
+LogCompileAllBlueprintsCommandlet: Display: BP_PlayerCharacter
+LogCompileAllBlueprintsCommandlet: Display: BP_GameMode
+LogCompileAllBlueprintsCommandlet: Display: Total Time spent: 2.45s
+LogExit: Game engine shut down

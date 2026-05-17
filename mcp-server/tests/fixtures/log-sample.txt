@@ -1,0 +1,10 @@
+[2024.01.15-12.34.56:789][  0]LogInit: Display: Game starting
+[2024.01.15-12.34.56:790][  0]LogPython: Display: Python initialized
+[2024.01.15-12.34.56:791][  0]LogTemp: Hello world
+[2024.01.15-12.34.56:792][  1]LogTemp: Display: Player spawned
+[2024.01.15-12.34.56:793][  2]LogBlueprint: Warning: Cast failed in BP_Player
+[2024.01.15-12.34.56:794][  3]LogTemp: Verbose: Tick processed
+[2024.01.15-12.34.56:795][  4]LogBlueprint: Error: Null reference accessed in MyFunction
+[2024.01.15-12.34.56:796][  5]LogPhysics: Warning: Object penetrated wall
+[2024.01.15-12.34.56:797][  6]LogTemp: Display: Game over
+LogShutdown: Engine shutting down
