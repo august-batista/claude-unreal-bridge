@@ -1,6 +1,6 @@
 ---
 description: Read and explain a specific UE blueprint
-allowed-tools: ["mcp__claude-unreal__read-blueprint", "mcp__claude-unreal__list-blueprints"]
+allowed-tools: ["mcp__plugin_claude-unreal_claude-unreal__read-blueprint", "mcp__plugin_claude-unreal_claude-unreal__list-blueprints"]
 ---
 
 Read and explain the Unreal Engine blueprint specified.

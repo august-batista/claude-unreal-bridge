@@ -1,0 +1,13 @@
+{
+  "name": "claude-unreal-local",
+  "owner": {
+    "name": "August"
+  },
+  "plugins": [
+    {
+      "name": "claude-unreal",
+      "source": "./",
+      "description": "Read, build, test, and observe Unreal Engine projects via headless editor commands."
+    }
+  ]
+}

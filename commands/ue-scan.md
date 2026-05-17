@@ -1,6 +1,6 @@
 ---
 description: Scan a UE project and generate a blueprint inventory and context file
-allowed-tools: ["mcp__claude-unreal__list-blueprints", "mcp__claude-unreal__generate-context", "mcp__claude-unreal__read-asset"]
+allowed-tools: ["mcp__plugin_claude-unreal_claude-unreal__list-blueprints", "mcp__plugin_claude-unreal_claude-unreal__generate-context", "mcp__plugin_claude-unreal_claude-unreal__read-asset"]
 ---
 
 Scan the Unreal Engine project and generate a comprehensive overview.

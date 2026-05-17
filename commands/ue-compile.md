@@ -1,6 +1,6 @@
 ---
 description: Compile UE blueprints and check for errors
-allowed-tools: ["mcp__claude-unreal__compile-blueprints"]
+allowed-tools: ["mcp__plugin_claude-unreal_claude-unreal__compile-blueprints"]
 ---
 
 Compile all blueprints in the Unreal Engine project and report any errors.
