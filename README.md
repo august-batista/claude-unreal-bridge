@@ -22,8 +22,15 @@ Tested against Unreal Engine 5.5+ (5.7 in dev).
 `build-cpp` (UnrealBuildTool), `compile-blueprints` (CompileAllBlueprints commandlet)
 
 **Run / test / observe**
-`run-tests` (Automation framework), `run-scenario` (headless map run with console
-commands), `read-logs` (Saved/Logs/<Project>.log with category/severity/regex filtering)
+`run-tests` (Automation framework), `run-scenario` (headless map run — single
+`execCmds` or scripted `steps` with Enhanced Input injection, held buttons,
+log-reactive waits), `read-logs` (Saved/Logs/<Project>.log with
+category/severity/regex filtering)
+
+Scripted scenarios with `injectAction`/`possess` require the
+[ClaudeUnrealBridge editor plugin](https://github.com/august-batista/claude-unreal-bridge-editor)'s
+Runtime submodule installed in the project; without it the other step types
+still work but input injection fails gracefully with a clear error.
 
 ### Slash commands
 `/ue-scan`, `/ue-read`, `/ue-build`, `/ue-compile`, `/ue-test`,

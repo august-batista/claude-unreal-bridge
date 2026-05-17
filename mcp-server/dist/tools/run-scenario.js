@@ -1,34 +1,88 @@
 import { z } from "zod";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, } from "node:fs";
 import { join } from "node:path";
-import { detectProject } from "../ue-bridge/project-detector.js";
+import { tmpdir } from "node:os";
+import { detectProject, defaultProjectLogPath, } from "../ue-bridge/project-detector.js";
 import { runEditor } from "../ue-bridge/editor-runner.js";
 import { filterLog, formatLogEntries, } from "../parsers/log-output.js";
+const pluginRoot = process.env.PLUGIN_ROOT || process.cwd();
+// Zod schema mirroring ScenarioStep — has to be runtime-validated because
+// the steps come in from the MCP client as JSON. Keep in sync with
+// src/types/scenario.ts.
+const stepSchema = z.discriminatedUnion("type", [
+    z.object({
+        type: z.literal("exec"),
+        cmd: z.string().describe("Console command, e.g. 'KE * StartTest', 'showdebug game', 'slomo 0.5'."),
+    }),
+    z.object({
+        type: z.literal("wait"),
+        seconds: z.number().min(0).describe("Game-time seconds. Scales with slomo / engine pause."),
+    }),
+    z.object({
+        type: z.literal("waitForLog"),
+        pattern: z.string().describe("Regex matched (case-insensitive) against live log output."),
+        timeoutSec: z.number().min(0).default(30).describe("Max game-time seconds to wait before advancing."),
+    }),
+    z.object({
+        type: z.literal("injectAction"),
+        action: z.string().describe("UInputAction asset path (`/Game/.../IA_Move`) or short name (`IA_Move`)."),
+        value: z
+            .union([
+            z.number(),
+            z.tuple([z.number(), z.number()]),
+            z.tuple([z.number(), z.number(), z.number()]),
+        ])
+            .optional()
+            .describe("Input value. Number for button/Axis1D, [x,y] for Axis2D (movement), [x,y,z] for Axis3D. Default 1.0 (boolean press)."),
+        holdSec: z
+            .number()
+            .min(0)
+            .optional()
+            .describe("If set, re-inject every tick for this many game-time seconds (held buttons, charge-up). Omit for a single-tick press."),
+    }),
+    z.object({
+        type: z.literal("possess"),
+        actorTag: z.string().optional().describe("Find the first actor with this tag and possess it."),
+        actorClass: z.string().optional().describe("Find the first actor of this class (e.g. `/Game/.../BP_Player.BP_Player_C`) and possess it."),
+    }),
+    z.object({
+        type: z.literal("playRecording"),
+        name: z.string().describe("Recording base name (e.g. \"FishTest1\") — resolves to <Project>/Saved/ClaudeRecordings/<name>.json. If the value contains a slash or ends in `.json`, treated as a full path."),
+        seekPawn: z.boolean().default(true).describe("Teleport the player pawn to the recording's first pawn-location sample before replay begins. Default true."),
+    }),
+    z.object({
+        type: z.literal("quit"),
+    }),
+]);
 export function registerRunScenarioTool(server) {
-    server.tool("run-scenario", "Boot a map headlessly and run console commands against it, then capture filtered logs from the run. " +
-        "Use to validate gameplay behaviour from outside the Automation framework — e.g. \"open this level, fire this ability, check the logs\". " +
-        "End your `execCmds` with `Quit` for a clean exit; otherwise rely on `timeoutMs`.", {
+    server.tool("run-scenario", "Boot a map headlessly and either (a) run a single -ExecCmds and capture logs, or (b) execute a scripted step list that drives the actual player input pipeline via EnhancedInput. " +
+        "Use the step list (`steps` parameter) when you need to test player logic — held buttons, sequenced inputs, log-reactive flows. " +
+        "Use the simple form (`execCmds`) for quick boot-and-cvar checks.", {
         projectPath: z
             .string()
             .describe("Absolute path to the UE project directory"),
         mapPath: z
             .string()
-            .describe("Map to boot. Accepts asset paths (`/Game/Maps/MyMap`) or short names (`MyMap`)."),
-        execCmds: z
-            .array(z.string())
-            .default([])
-            .describe("Console commands to run after the map loads, in order. Example: [\"showdebug game\", \"ke * StartScenario\", \"Quit\"]. Include `Quit` to terminate cleanly."),
+            .describe("Map to boot. Asset path (`/Game/Maps/MyMap`) or short name."),
         mode: z
             .enum(["editor", "game"])
             .default("game")
-            .describe("`game` (default) launches with `-game` for actual gameplay execution (PIE-like). `editor` opens the map in editor mode (use when you need editor-only systems)."),
+            .describe("`game` (default) launches with `-game` so gameplay logic actually runs. `editor` for editor-only systems."),
+        steps: z
+            .array(stepSchema)
+            .optional()
+            .describe("Scripted step list. Drives the actual player input pipeline (EnhancedInput injection), supports holds, log-reactive waits, possess. Mutually exclusive with `execCmds`."),
+        execCmds: z
+            .array(z.string())
+            .default([])
+            .describe("Simple form: console commands sent at boot via -ExecCmds (joined with `;`, but note UE drops anything after the first command unreliably — prefer `steps` for multi-command sequences). Include `Quit` if you want a clean exit."),
         timeoutMs: z
             .number()
             .int()
             .min(60_000)
             .max(3_600_000)
             .default(300_000)
-            .describe("Hard timeout. Defaults to 5 minutes. The process is force-killed if it overruns."),
+            .describe("Hard timeout backstop. The process is force-killed if it overruns."),
         logCategories: z
             .array(z.string())
             .optional()
@@ -44,7 +98,7 @@ export function registerRunScenarioTool(server) {
             "veryverbose",
         ])
             .default("display")
-            .describe("Lowest log severity to include in the captured output. Default `display` keeps gameplay UE_LOG output visible."),
+            .describe("Lowest log severity to include in the captured slice. Default `display` keeps gameplay UE_LOG output visible."),
         pattern: z
             .string()
             .optional()
@@ -55,28 +109,114 @@ export function registerRunScenarioTool(server) {
             .min(0)
             .max(2000)
             .default(150)
-            .describe("Max log lines to include in the response. The most recent matches are kept. Set to 0 to skip log embedding (use `read-logs` afterwards)."),
-    }, async ({ projectPath, mapPath, execCmds, mode, timeoutMs, logCategories, minSeverity, pattern, maxLogLines, }) => {
+            .describe("Max log lines to include in the response. Set to 0 to skip log embedding (use `read-logs` afterwards)."),
+    }, async ({ projectPath, mapPath, mode, steps, execCmds, timeoutMs, logCategories, minSeverity, pattern, maxLogLines, }) => {
         try {
             const project = detectProject(projectPath);
-            // Note the current log mtime so we can confirm we're reading the
-            // log this run produced, not a stale one.
-            const logPath = join(project.projectPath, "Saved", "Logs", `${project.projectName}.log`);
-            const beforeMtime = existsSync(logPath)
-                ? statSync(logPath).mtimeMs
-                : 0;
+            if (steps && steps.length > 0 && execCmds.length > 0) {
+                return {
+                    content: [
+                        {
+                            type: "text",
+                            text: "Error: `steps` and `execCmds` are mutually exclusive. " +
+                                "Use `steps` for scripted scenarios (preferred), or `execCmds` for a single-shot boot.",
+                        },
+                    ],
+                };
+            }
+            const logPath = defaultProjectLogPath(project);
+            const beforeMtime = existsSync(logPath) ? statSync(logPath).mtimeMs : 0;
+            // Scenario mode — generate scenario JSON, launch with the Python runner.
+            let scenarioDir;
+            let scenarioPath;
+            let scenarioResultPath;
+            // Detect playback steps. Playback in -game mode silently no-ops
+            // because the IMC isn't bound the way it is in PIE — so when any
+            // step is playRecording, we drop -game and launch the editor in
+            // editor mode, then have the Python runner trigger PIE itself.
+            const wantsPie = (steps ?? []).some((s) => s.type === "playRecording");
             const argv = [];
-            if (mode === "game")
+            if (mode === "game" && !wantsPie)
                 argv.push("-game");
             argv.push(mapPath);
-            if (execCmds.length > 0) {
-                // UE expects "; "-separated commands in a single -ExecCmds arg.
+            let envExtra;
+            if (steps && steps.length > 0) {
+                scenarioDir = mkdtempSync(join(tmpdir(), "claude-unreal-scenario-"));
+                scenarioPath = join(scenarioDir, "steps.json");
+                scenarioResultPath = join(scenarioDir, "result.json");
+                // Resolve playRecording.name → absolute path so the Python runner
+                // doesn't need to know the project's saved-dir convention.
+                const recordingsDir = join(project.projectPath, "Saved", "ClaudeRecordings");
+                const resolvedSteps = steps.map((s) => {
+                    if (s.type !== "playRecording")
+                        return s;
+                    const name = s.name;
+                    let resolved = name;
+                    if (!name.includes("/")) {
+                        // Bare name like "FishTest1" — resolve in the standard dir.
+                        resolved = join(recordingsDir, name.endsWith(".json") ? name : `${name}.json`);
+                    }
+                    else if (!name.startsWith("/")) {
+                        // Relative path — resolve under recordings dir.
+                        resolved = join(recordingsDir, name);
+                    }
+                    return { ...s, name: resolved };
+                });
+                writeFileSync(scenarioPath, JSON.stringify(resolvedSteps, null, 2));
+                const runnerPath = join(pluginRoot, "python-scripts", "scenario_runner.py");
+                // UE's `py` console command auto-loads a .py file given as its
+                // argument. (`py.execfile` is not a real subcommand — UE will
+                // parse it as `py` with argument `.execfile <path>` and try to
+                // load that literal as a file.)
+                argv.push(`-ExecCmds=py ${runnerPath}`);
+                envExtra = {
+                    CLAUDE_SCENARIO_JSON: scenarioPath,
+                    CLAUDE_SCENARIO_RESULT: scenarioResultPath,
+                    CLAUDE_SCENARIO_LOG: logPath,
+                };
+                if (wantsPie) {
+                    envExtra.CLAUDE_SCENARIO_AUTOSTART_PIE = "1";
+                }
+            }
+            else if (execCmds.length > 0) {
                 argv.push(`-ExecCmds=${execCmds.join("; ")}`);
             }
             argv.push("-log");
+            // For PIE-replay scenarios:
+            //   -RenderOffscreen — Slate renders to backbuffer, no on-screen
+            //                      window pops up, no focus steal. The user
+            //                      can keep working in their main editor.
+            //   No -nullrhi      — Slate input processing needs a real RHI.
+            //   No -game         — we run in editor mode so we can start PIE.
+            const headlessFlags = wantsPie
+                ? ["-unattended", "-nopause", "-nosound", "-nosplash", "-RenderOffscreen"]
+                : undefined; // editor-runner uses its default (with -nullrhi) otherwise
             const run = await runEditor(project, {
                 extraArgs: argv,
                 timeoutMs,
+                env: envExtra,
+                headlessFlags,
+                // For scripted scenarios, poll for the result JSON. The Python
+                // runner writes it when the step list completes; we then SIGTERM
+                // because quit_game can't reliably terminate without a world ref
+                // in -nullrhi mode.
+                onSpawn: scenarioResultPath
+                    ? (_proc, kill) => {
+                        const resultFile = scenarioResultPath;
+                        let killed = false;
+                        const interval = setInterval(() => {
+                            if (killed)
+                                return;
+                            if (existsSync(resultFile)) {
+                                killed = true;
+                                // Give the runner ~1s to also try its own quit (and
+                                // anything mid-flush) before we SIGTERM.
+                                setTimeout(() => kill(), 1000);
+                            }
+                        }, 500);
+                        return () => clearInterval(interval);
+                    }
+                    : undefined,
             });
             const lines = [];
             const status = run.timedOut
@@ -84,9 +224,35 @@ export function registerRunScenarioTool(server) {
                 : run.exitCode === 0
                     ? "OK"
                     : "FAILED";
-            lines.push(`## Scenario: ${status} — \`${mapPath}\` (${mode})`);
+            lines.push(`## Scenario: ${status} — \`${mapPath}\` (${mode}${steps ? `, ${steps.length} step(s)` : ""})`);
             lines.push(`Editor exit: ${run.exitCode ?? "killed"}, duration: ${(run.durationMs / 1000).toFixed(1)}s.`);
-            if (execCmds.length > 0) {
+            // If we ran a scripted scenario, fold the step trace in.
+            if (scenarioResultPath && existsSync(scenarioResultPath)) {
+                try {
+                    const result = JSON.parse(readFileSync(scenarioResultPath, "utf-8").replace(/^﻿/, ""));
+                    lines.push("", "### Step trace", "");
+                    for (const r of result.steps) {
+                        const tag = r.outcome === "ok" || r.outcome === "matched"
+                            ? "✓"
+                            : r.outcome === "timedOut"
+                                ? "⏱"
+                                : "✗";
+                        lines.push(`${tag} **${r.index}. ${r.type}** — ${r.outcome} (${r.durationSec.toFixed(2)}s game time)` +
+                            (r.detail ? ` — _${r.detail}_` : ""));
+                    }
+                    if (result.earlyExit) {
+                        lines.push("", `_Early exit: ${result.earlyExit}_`);
+                    }
+                    lines.push("", `Final game time: ${result.finalGameSec.toFixed(2)}s.`);
+                }
+                catch (err) {
+                    lines.push("", `_Failed to parse scenario result JSON: ${err instanceof Error ? err.message : String(err)}_`);
+                }
+            }
+            else if (steps && steps.length > 0) {
+                lines.push("", "_Scenario result JSON missing — the runner didn't reach completion. Check the log for `[ClaudeScenario]` lines._");
+            }
+            else if (execCmds.length > 0) {
                 lines.push("", "**Exec commands sent:**", ...execCmds.map((c) => `- \`${c}\``));
             }
             if (maxLogLines > 0) {
@@ -111,10 +277,15 @@ export function registerRunScenarioTool(server) {
                 }
             }
             if (status !== "OK" && (run.stderr || "").trim()) {
-                // Surface the last bit of stderr to help diagnose launch failures
-                // — these are usually editor-startup errors that pre-date logging.
                 const tail = run.stderr.slice(-1500).trim();
                 lines.push("", "### Editor stderr (tail)", "", "```", tail, "```");
+            }
+            // Clean up scenario temp dir.
+            if (scenarioDir) {
+                try {
+                    rmSync(scenarioDir, { recursive: true, force: true });
+                }
+                catch { /* best effort */ }
             }
             return {
                 content: [{ type: "text", text: lines.join("\n") }],

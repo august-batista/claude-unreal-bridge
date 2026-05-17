@@ -107,22 +107,33 @@ silently skip.
 This is where headless tests catch real bugs that compile passes miss.
 
 1. Boot the map you chose in Phase 0 with `mode: "game"`.
-2. Construct `execCmds` to actually exercise the change:
-   - For systems that auto-tick (spawners, AI), no execCmds needed.
-   - For systems that need triggering, use console commands the project
-     supports. Look for `TAutoConsoleCommand` registrations in source.
-   - For features that require player input (a button press, a UI
-     interaction), you can't drive them headlessly. Note this in the
-     report as "manual verification required: <reason>" and move on.
+2. Pick the scenario shape:
+   - **For systems that auto-tick** (spawners, AI, world initialisers),
+     use the simple `execCmds` form for any startup cvars and rely on log
+     output. The poll-and-kill in `run-scenario` SIGTERMs when the result
+     marker lands.
+   - **For player-driven gameplay** (input sequences, held buttons,
+     reactive flows), use the scripted `steps` form. Step types: `exec`,
+     `wait` (game-time seconds), `waitForLog` (regex with timeout),
+     `injectAction` (Enhanced Input — discrete or `holdSec`-held),
+     `possess`, `quit`. The runner drives the actual player input
+     pipeline — same code path as a real keypress — not a cheat bypass.
+   - **For features that genuinely require a human** (UI button click,
+     mouse aim against a specific pixel), report `MANUAL-REQUIRED` and
+     name what needs human verification. Don't pretend.
 3. Set `logCategories` to the project's relevant category, `minSeverity`
    to `display` (so per-tick diagnostics show up), `maxLogLines` ~150.
-4. Set `timeoutMs` to a tight bound — e.g. 60-90s for most cases. UE
-   startup is ~30s; you usually need 5-15s of actual game time.
-5. **Important pattern when the scenario doesn't self-terminate:** the
-   bridge's `run-scenario` doesn't currently auto-quit on log markers
-   (only `run-tests` has poll-and-kill). If you need that, set a tight
-   `timeoutMs` and accept the SIGTERM. Log lines are written promptly
-   (line-buffered) so SIGTERM doesn't lose data.
+4. Set `timeoutMs` to a tight bound — 60-120s for most cases. UE startup
+   is ~10-30s; the rest is your steps.
+5. The scripted `steps` form auto-writes a result JSON when complete;
+   `run-scenario` polls for it and SIGTERMs cleanly. The simple form
+   relies on `timeoutMs` (log lines are line-buffered, so SIGTERM is
+   safe for log capture).
+6. **Input injection requires** the **ClaudeUnrealBridge** editor-side
+   plugin's Runtime submodule to be loaded in the project. If
+   `injectAction`/`possess` steps return `error: no EnhancedInputLocalPlayerSubsystem`,
+   the project lacks the plugin. Report this and either fall back to
+   `exec`-only verification or recommend the user install the plugin.
 
 ### Phase 5 — Log triage (`read-logs`)
 
@@ -211,6 +222,11 @@ the parent can re-run.)
 - **The first `[FishPhysInit]`-style one-shot log per spawn is gold.**
   It tells you the system woke up. The 1Hz `[FishDiag]`-style ticks
   tell you it's still healthy. Both should be in your read-logs filter.
+- **Scripted `steps` beats single `execCmds` for any multi-stage flow.**
+  UE drops anything after the first command in a `;`-separated execCmds
+  string. The `steps` runner handles sequencing, waits, log-reactive
+  branching, and Enhanced Input injection — and writes a structured
+  per-step trace you can quote in the verdict.
 - **The bridge pins `-AbsLog=` to `<Project>/Saved/Logs/<Project>.log`**
   on every launch. You don't need the macOS fallback path inside this
   agent — it's there for users running UE outside the bridge.

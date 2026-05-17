@@ -46,6 +46,9 @@ export async function runEditor(project, options) {
         let timedOut = false;
         const proc = spawn(installation.editorCmdPath, argv, {
             stdio: ["ignore", "pipe", "pipe"],
+            env: options.env
+                ? { ...process.env, ...options.env }
+                : process.env,
         });
         proc.stdout.on("data", (b) => {
             stdout += b.toString();

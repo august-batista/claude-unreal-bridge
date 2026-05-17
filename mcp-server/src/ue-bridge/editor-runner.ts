@@ -24,6 +24,12 @@ export interface EditorRunOptions {
   /** Override the standard headless flags (advanced; use sparingly). */
   headlessFlags?: string[];
   /**
+   * Extra environment variables to merge into the spawned editor's env.
+   * Used by run-scenario to pass the scenario JSON path / result path to
+   * the in-game Python runner.
+   */
+  env?: Record<string, string>;
+  /**
    * Called immediately after the editor process spawns. Useful for
    * installing custom termination strategies — e.g. polling for a report
    * file and calling `kill()` once it appears (UE doesn't always
@@ -102,6 +108,9 @@ export async function runEditor(
 
     const proc = spawn(installation.editorCmdPath, argv, {
       stdio: ["ignore", "pipe", "pipe"],
+      env: options.env
+        ? { ...process.env, ...options.env }
+        : process.env,
     });
 
     proc.stdout.on("data", (b: Buffer) => {

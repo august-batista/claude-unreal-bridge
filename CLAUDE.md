@@ -36,7 +36,7 @@ The plugin has two halves:
 
 ### Run / test / observe
 - `run-tests` — Drives `Automation RunTests <Filter>` headlessly and parses the JSON report UE writes to `-ReportExportPath`. Pass/fail per test with error events.
-- `run-scenario` — Boots a map (default `-game` mode), runs `-ExecCmds`, captures filtered logs from the run.
+- `run-scenario` — Boots a map (default `-game` mode), then either (a) sends single-shot `-ExecCmds`, or (b) executes a scripted `steps` list (exec, wait, waitForLog, injectAction with hold-per-tick, possess, quit) that drives the actual Enhanced Input pipeline. The scripted form runs an in-game Python tick handler (`python-scripts/scenario_runner.py`) and needs the `ClaudeUnrealBridge` editor-side plugin's Runtime submodule for `injectAction`/`possess`.
 - `read-logs` — Reads `<Project>/Saved/Logs/<Project>.log` (current or previous runs); filters by category, severity, regex.
 
 ## Slash commands
