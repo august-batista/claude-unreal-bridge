@@ -44,6 +44,10 @@ export async function runEditor(project, options) {
         let stdout = "";
         let stderr = "";
         let timedOut = false;
+        // NOTE: not using `detached: true` here — we want the child to share
+        // the parent's process group so a Ctrl-C on the test/agent reaps the
+        // editor instead of orphaning it. Focus theft is solved by passing
+        // -RenderOffscreen (no window created), not by process-group games.
         const proc = spawn(installation.editorCmdPath, argv, {
             stdio: ["ignore", "pipe", "pipe"],
             env: options.env

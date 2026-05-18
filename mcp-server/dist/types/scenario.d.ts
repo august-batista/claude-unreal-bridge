@@ -66,18 +66,29 @@ export interface PossessStep {
  * snapping the pawn to its recorded location at start so the bear is
  * in the right place before the inputs fire.
  *
- *   `name`     — base name of the recording, e.g. "FishTest1". Resolves
- *                to <Project>/Saved/ClaudeRecordings/<name>.json. If the
- *                name ends in `.json` or contains a slash, treated as a
- *                full path.
- *   `seekPawn` — if true (default), teleport the player pawn to the
- *                recording's first pawn-location sample before replay
- *                starts. Avoids "bear is in the wrong place" replays.
+ *   `name`            — base name of the recording, e.g. "FishTest1".
+ *                       Resolves to <Project>/Saved/ClaudeRecordings/<name>.json.
+ *                       If the name ends in `.json` or contains a slash,
+ *                       treated as a full path.
+ *   `seekPawn`        — if true (default), teleport the player pawn to the
+ *                       recording's first pawn-location sample before
+ *                       replay starts. Avoids "bear is in the wrong place"
+ *                       replays.
+ *   `mappingContexts` — optional IMC asset paths (or short names) to bind
+ *                       on the local player before playback. Needed when
+ *                       the game's normal flow (UI screen, level-start
+ *                       cinematic) is skipped in a headless boot and the
+ *                       pawn's BeginPlay isn't the one wiring AddMappingContext.
+ *                       If omitted, the runner tries (in order): the
+ *                       recording's metadata, then the pawn class's default
+ *                       subobjects (`default_mapping_context`,
+ *                       `mapping_context`, `mapping_contexts`).
  */
 export interface PlayRecordingStep {
     type: "playRecording";
     name: string;
     seekPawn?: boolean;
+    mappingContexts?: string[];
 }
 /** Tell UE to quit cleanly. The runner sends this automatically when all
  *  steps complete, so it's usually only needed for mid-script aborts. */

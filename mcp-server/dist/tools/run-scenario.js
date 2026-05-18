@@ -49,6 +49,10 @@ const stepSchema = z.discriminatedUnion("type", [
         type: z.literal("playRecording"),
         name: z.string().describe("Recording base name (e.g. \"FishTest1\") — resolves to <Project>/Saved/ClaudeRecordings/<name>.json. If the value contains a slash or ends in `.json`, treated as a full path."),
         seekPawn: z.boolean().default(true).describe("Teleport the player pawn to the recording's first pawn-location sample before replay begins. Default true."),
+        mappingContexts: z
+            .array(z.string())
+            .optional()
+            .describe("Optional list of UInputMappingContext asset paths (`/Game/.../IMC_Default`) or short names to bind on the local player before playback. Needed when a headless boot skips the in-game flow that normally calls AddMappingContext. If omitted, the runner falls back to (a) the recording's own metadata, then (b) the pawn class's default IMC properties."),
     }),
     z.object({
         type: z.literal("quit"),
@@ -130,13 +134,16 @@ export function registerRunScenarioTool(server) {
             let scenarioDir;
             let scenarioPath;
             let scenarioResultPath;
-            // Detect playback steps. Playback in -game mode silently no-ops
-            // because the IMC isn't bound the way it is in PIE — so when any
-            // step is playRecording, we drop -game and launch the editor in
-            // editor mode, then have the Python runner trigger PIE itself.
-            const wantsPie = (steps ?? []).some((s) => s.type === "playRecording");
+            // playRecording runs in -game with a real RHI (Slate input routing
+            // needs a viewport widget alive — the recording is at slate level,
+            // not action-level) but rendered off-screen so no on-screen window
+            // appears on macOS. IMC binding happens in scenario_runner.py
+            // before Rec.Play fires, in case the game's normal flow that wires
+            // AddMappingContext is gated behind a UI screen that the headless
+            // boot skips.
+            const wantsRecording = (steps ?? []).some((s) => s.type === "playRecording");
             const argv = [];
-            if (mode === "game" && !wantsPie)
+            if (mode === "game")
                 argv.push("-game");
             argv.push(mapPath);
             let envExtra;
@@ -174,23 +181,20 @@ export function registerRunScenarioTool(server) {
                     CLAUDE_SCENARIO_RESULT: scenarioResultPath,
                     CLAUDE_SCENARIO_LOG: logPath,
                 };
-                if (wantsPie) {
-                    envExtra.CLAUDE_SCENARIO_AUTOSTART_PIE = "1";
-                }
             }
             else if (execCmds.length > 0) {
                 argv.push(`-ExecCmds=${execCmds.join("; ")}`);
             }
             argv.push("-log");
-            // For PIE-replay scenarios:
-            //   -RenderOffscreen — Slate renders to backbuffer, no on-screen
-            //                      window pops up, no focus steal. The user
-            //                      can keep working in their main editor.
-            //   No -nullrhi      — Slate input processing needs a real RHI.
-            //   No -game         — we run in editor mode so we can start PIE.
-            const headlessFlags = wantsPie
+            // For recording playback:
+            //   keep -game (gameplay world boots normally, no editor UI)
+            //   drop -nullrhi (Slate input routing into the focused viewport
+            //                  needs a real RHI to set up the widget tree)
+            //   add -RenderOffscreen (renders to backbuffer, no on-screen window
+            //                         appears, so no focus steal on macOS)
+            const headlessFlags = wantsRecording
                 ? ["-unattended", "-nopause", "-nosound", "-nosplash", "-RenderOffscreen"]
-                : undefined; // editor-runner uses its default (with -nullrhi) otherwise
+                : undefined; // other scripted steps run under the default (with -nullrhi)
             const run = await runEditor(project, {
                 extraArgs: argv,
                 timeoutMs,

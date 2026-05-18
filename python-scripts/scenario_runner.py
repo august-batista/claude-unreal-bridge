@@ -230,45 +230,66 @@ def _world():
     except Exception as e:
         _log_strategy("gc.get_objects", False, "raised: %s" % e)
 
-    # Strategy 3: editor subsystem — may work even in -game since the
-    # editor binary is running with a single world context.
-    try:
-        eus = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem)
-        if eus:
-            getter = getattr(eus, "get_game_world", None) or getattr(eus, "get_editor_world", None)
-            if getter:
-                w = getter()
-                if w:
-                    _world_cache["world"] = w
-                    _log_strategy("UnrealEditorSubsystem", True, getter.__name__)
-                    if not _world_cache["diag_logged"]:
-                        _log("world finder strategies: " + " | ".join(diag))
-                        _world_cache["diag_logged"] = True
-                    return w
-            _log_strategy("UnrealEditorSubsystem", False, "no getter")
-        else:
-            _log_strategy("UnrealEditorSubsystem", False, "subsystem None")
-    except Exception as e:
-        _log_strategy("UnrealEditorSubsystem", False, "exception: %s" % e)
+    # Strategies 3 / 3b are editor-only. In -game mode there is no editor
+    # subsystem, and calling EditorLevelLibrary.get_editor_world() in -game
+    # mode SIGSEGVs inside FSubsystemCollectionBase. Gate on a cheap is_editor
+    # probe (Python's `unreal.is_editor()` exists in 5.5+; falls back to
+    # checking for a known editor-only subsystem).
+    def _is_editor_context():
+        fn = getattr(unreal, "is_editor", None)
+        if callable(fn):
+            try:
+                return bool(fn())
+            except Exception:
+                pass
+        # Fallback: presence of any editor subsystem implies editor binary.
+        try:
+            return unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem) is not None
+        except Exception:
+            return False
 
-    # Strategy 3b: EditorLevelLibrary (legacy editor utility) — broadly
-    # works in editor mode (whether PIE is up or not).
-    try:
-        ell = getattr(unreal, "EditorLevelLibrary", None)
-        if ell:
-            getter = getattr(ell, "get_editor_world", None) or getattr(ell, "get_game_world", None)
-            if getter:
-                w = getter()
-                if w:
-                    _world_cache["world"] = w
-                    _log_strategy("EditorLevelLibrary", True, getter.__name__)
-                    if not _world_cache["diag_logged"]:
-                        _log("world finder strategies: " + " | ".join(diag))
-                        _world_cache["diag_logged"] = True
-                    return w
-            _log_strategy("EditorLevelLibrary", False, "no getter")
-    except Exception as e:
-        _log_strategy("EditorLevelLibrary", False, "exception: %s" % e)
+    if _is_editor_context():
+        # Strategy 3: editor subsystem — may work even in -game since the
+        # editor binary is running with a single world context.
+        try:
+            eus = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem)
+            if eus:
+                getter = getattr(eus, "get_game_world", None) or getattr(eus, "get_editor_world", None)
+                if getter:
+                    w = getter()
+                    if w:
+                        _world_cache["world"] = w
+                        _log_strategy("UnrealEditorSubsystem", True, getter.__name__)
+                        if not _world_cache["diag_logged"]:
+                            _log("world finder strategies: " + " | ".join(diag))
+                            _world_cache["diag_logged"] = True
+                        return w
+                _log_strategy("UnrealEditorSubsystem", False, "no getter")
+            else:
+                _log_strategy("UnrealEditorSubsystem", False, "subsystem None")
+        except Exception as e:
+            _log_strategy("UnrealEditorSubsystem", False, "exception: %s" % e)
+
+        # Strategy 3b: EditorLevelLibrary (legacy editor utility) — broadly
+        # works in editor mode (whether PIE is up or not).
+        try:
+            ell = getattr(unreal, "EditorLevelLibrary", None)
+            if ell:
+                getter = getattr(ell, "get_editor_world", None) or getattr(ell, "get_game_world", None)
+                if getter:
+                    w = getter()
+                    if w:
+                        _world_cache["world"] = w
+                        _log_strategy("EditorLevelLibrary", True, getter.__name__)
+                        if not _world_cache["diag_logged"]:
+                            _log("world finder strategies: " + " | ".join(diag))
+                            _world_cache["diag_logged"] = True
+                        return w
+                _log_strategy("EditorLevelLibrary", False, "no getter")
+        except Exception as e:
+            _log_strategy("EditorLevelLibrary", False, "exception: %s" % e)
+    else:
+        _log_strategy("EditorSubsystem strategies", False, "skipped: not editor context (-game mode)")
 
     # Strategy 4: find_object by common name. The runtime world is typically
     # named after the .umap basename (e.g. /Engine/Maps/X.X loads to "X").
@@ -488,6 +509,110 @@ def _resolve_input_action(name_or_path):
     return None
 
 
+def _resolve_input_mapping_context(name_or_path):
+    """Load a UInputMappingContext by asset path or short name.
+
+    Same shape as `_resolve_input_action`, but filtered to the
+    InputMappingContext class. `/Game/...` paths load directly; short
+    names go through the asset registry.
+    """
+    if not name_or_path:
+        return None
+    if name_or_path.startswith("/"):
+        return unreal.load_object(None, name_or_path)
+    try:
+        ar = unreal.AssetRegistryHelpers.get_asset_registry()
+        filt = unreal.ARFilter(
+            class_names=["InputMappingContext"],
+            recursive_paths=True,
+            package_paths=["/Game"],
+        )
+        for asset in ar.get_assets(filt):
+            if str(asset.asset_name) == name_or_path:
+                return unreal.load_object(None, str(asset.package_name) + "." + str(asset.asset_name))
+    except Exception as e:
+        _err("IMC asset registry lookup failed for %r: %s" % (name_or_path, e))
+    return None
+
+
+def _bind_input_mapping_contexts(names_or_paths, priority=0):
+    """Add a list of UInputMappingContexts to the local player's
+    EnhancedInputLocalPlayerSubsystem.
+
+    Returns a list of `(name, ok, detail)` triples so callers can fold
+    the outcome into a step trace. Logs each attempt. Per-IMC exceptions
+    are caught so one bad name doesn't abort the others.
+    """
+    results = []
+    if not names_or_paths:
+        return results
+    sub = _enhanced_input_subsystem()
+    if not sub:
+        _log("IMC bind: no EnhancedInputLocalPlayerSubsystem available; skipping %d IMC(s)"
+             % len(names_or_paths))
+        for n in names_or_paths:
+            results.append((n, False, "no subsystem"))
+        return results
+    for name in names_or_paths:
+        try:
+            imc = _resolve_input_mapping_context(name)
+            if imc is None:
+                _log("IMC bind: could not resolve %r" % name)
+                results.append((name, False, "not found"))
+                continue
+            sub.add_mapping_context(imc, priority)
+            _log("IMC bound: %s (priority %d)" % (name, priority))
+            results.append((name, True, None))
+        except Exception as e:
+            _log("IMC bind: %r raised: %s" % (name, e))
+            results.append((name, False, "raised: %s" % e))
+    return results
+
+
+def _discover_pawn_default_imcs(pawn):
+    """Best-effort: introspect a pawn's class-default subobjects for an
+    IMC reference. Tries common UProperty names. Returns a list of
+    `/Game/...` paths (possibly empty)."""
+    if not pawn:
+        return []
+    try:
+        cdo = pawn.get_class().get_default_object()
+    except Exception:
+        return []
+    # Property name candidates, in priority order. UE Python's pascal-to-
+    # snake conversion is consistent for these.
+    name_candidates = [
+        "default_mapping_context",
+        "mapping_context",
+        "default_input_mapping_context",
+        "input_mapping_context",
+        "mapping_contexts",
+        "default_mapping_contexts",
+        "input_mapping_contexts",
+    ]
+    found_paths = []
+    for prop_name in name_candidates:
+        try:
+            val = cdo.get_editor_property(prop_name)
+        except Exception:
+            continue
+        if val is None:
+            continue
+        # Either a single IMC asset or an iterable of them. Both shapes
+        # show up across projects.
+        if hasattr(val, "get_path_name"):
+            found_paths.append(val.get_path_name())
+            _log("IMC discover: pawn.%s -> %s" % (prop_name, val.get_path_name()))
+        elif hasattr(val, "__iter__"):
+            for item in val:
+                if item and hasattr(item, "get_path_name"):
+                    found_paths.append(item.get_path_name())
+                    _log("IMC discover: pawn.%s[] -> %s" % (prop_name, item.get_path_name()))
+        if found_paths:
+            break
+    return found_paths
+
+
 def _action_value_type(kind):
     """Resolve an EInputActionValueType enum value by trying several naming
     conventions. UE Python's pascal-to-snake generator behaves differently
@@ -649,11 +774,20 @@ def _handle_play_recording(step):
     subsystem — we just kick off `Rec.Play <name>` via console and
     poll the recorder's `is_playing_back` state until it finishes.
 
-    The console route works because we tested it interactively;
-    Python-side subsystem-lookup is also an option (`gi.get_subsystem(
-    unreal.ClaudeInputRecorder)`) but the console path is simpler.
+    Before kicking off Rec.Play we bind any required InputMappingContexts
+    onto the local player's EnhancedInputLocalPlayerSubsystem. A headless
+    -game boot can skip the in-game flow (UI screen, level-start sequence)
+    that normally wires AddMappingContext on the player, leaving the
+    replayed key/mouse events with nothing to map to. Source priority:
+        (a) step.mappingContexts (user-supplied, authoritative)
+        (b) recording metadata (if the recording's JSON has the field)
+        (c) pawn class default subobject (default_mapping_context etc.)
+    Failures are logged and we proceed — the game's own BeginPlay may
+    handle the binding regardless.
 
     Per-step state (state["sub"]):
+        binds_done          bool — IMC bind phase ran (success or no-op)
+        bind_wait_started   game-time when we started waiting for a pawn
         kicked_off          bool — have we called Rec.Play yet?
         pre_pos             pawn position snapshot before replay
         last_status_log     time of last Rec.Status-style log
@@ -669,6 +803,52 @@ def _handle_play_recording(step):
             sub["pre_pos"] = (p.x, p.y, p.z)
         else:
             sub["pre_pos"] = None
+
+    # One-shot IMC bind phase. We need a pawn (and therefore a local
+    # player) to resolve the EnhancedInputLocalPlayerSubsystem — wait up
+    # to 10s game time for it, then proceed bare. The wait is cheap; if
+    # a pawn never appears the bind silently no-ops via the helper.
+    if not sub.get("binds_done"):
+        pawn = _player_pawn()
+        if pawn is None:
+            if "bind_wait_started" not in sub:
+                sub["bind_wait_started"] = _game_seconds()
+            if _game_seconds() - sub["bind_wait_started"] < 10.0:
+                return False, "ok", None
+            _log("IMC bind: pawn never appeared after 10s; proceeding without explicit bind")
+            sub["bound_count"] = 0
+            sub["binds_done"] = True
+        else:
+            # Source priority (a) → (b) → (c).
+            imc_names = list(step.get("mappingContexts") or [])
+            source = "step.mappingContexts" if imc_names else None
+            if not imc_names:
+                # Recording JSON metadata.
+                try:
+                    import json as _json
+                    with open(path, "r") as f:
+                        rec = _json.load(f)
+                    for k in ("mappingContexts", "inputMappingContexts"):
+                        v = rec.get(k)
+                        if v:
+                            imc_names = list(v)
+                            source = "recording.%s" % k
+                            break
+                except Exception:
+                    pass
+            if not imc_names:
+                discovered = _discover_pawn_default_imcs(pawn)
+                if discovered:
+                    imc_names = discovered
+                    source = "pawn defaults"
+            if imc_names:
+                _log("IMC bind: %d context(s) from %s" % (len(imc_names), source))
+                results = _bind_input_mapping_contexts(imc_names)
+                sub["bound_count"] = sum(1 for _, ok, _ in results if ok)
+            else:
+                _log("IMC bind: 0 contexts found (no step.mappingContexts, no recording metadata, no pawn defaults)")
+                sub["bound_count"] = 0
+            sub["binds_done"] = True
 
     if not sub.get("kicked_off"):
         # Sanity: file exists?
@@ -732,7 +912,9 @@ def _handle_play_recording(step):
         dx, dy, dz = p.x - pre[0], p.y - pre[1], p.z - pre[2]
         dist = (dx * dx + dy * dy + dz * dz) ** 0.5
         motion = " | bear moved %.1f cm" % dist
-    return True, "ok", "Rec.Play complete%s" % motion
+    bound = sub.get("bound_count")
+    binds = " | bound %d IMC(s)" % bound if bound is not None else ""
+    return True, "ok", "Rec.Play complete%s%s" % (motion, binds)
 
 
 def _handle_quit(step):
@@ -840,6 +1022,9 @@ def _tick(delta_seconds):
         # AUTOSTART_PIE pre-phase: editor binary was launched without -game.
         # We wait for an editor world, trigger PIE programmatically, then
         # wait for the PIE world to come up. Only then do we let steps run.
+        # NOTE: run-scenario.ts no longer sets CLAUDE_SCENARIO_AUTOSTART_PIE
+        # for playRecording (we use `-game -RenderOffscreen` instead). This
+        # block is preserved for future tools that may want a PIE pre-phase.
         if AUTOSTART_PIE:
             if not state["pie_triggered"]:
                 if _has_editor_world():
