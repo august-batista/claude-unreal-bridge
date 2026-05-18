@@ -36,8 +36,49 @@ The plugin has two halves:
 
 ### Run / test / observe
 - `run-tests` — Drives `Automation RunTests <Filter>` headlessly and parses the JSON report UE writes to `-ReportExportPath`. Pass/fail per test with error events.
-- `run-scenario` — Boots a map (default `-game` mode), then either (a) sends single-shot `-ExecCmds`, or (b) executes a scripted `steps` list (exec, wait, waitForLog, injectAction with hold-per-tick, possess, quit) that drives the actual Enhanced Input pipeline. The scripted form runs an in-game Python tick handler (`python-scripts/scenario_runner.py`) and needs the `ClaudeUnrealBridge` editor-side plugin's Runtime submodule for `injectAction`/`possess`.
+- `run-scenario` — Boots a map (default `-game` mode), then either (a) sends single-shot `-ExecCmds`, or (b) executes a scripted `steps` list (exec, wait, waitForLog, injectAction with hold-per-tick, possess, **playRecording**, quit) that drives the actual Enhanced Input pipeline. The scripted form runs an in-game Python tick handler (`python-scripts/scenario_runner.py`) and needs the `ClaudeUnrealBridge` editor-side plugin's Runtime submodule for `injectAction`/`possess`/`playRecording`. Optional `visible: true` shows the editor window for live debugging; default is offscreen / no focus theft.
 - `read-logs` — Reads `<Project>/Saved/Logs/<Project>.log` (current or previous runs); filters by category, severity, regex.
+
+## Recording & playback (Slate-level replay)
+
+The `playRecording` step in `run-scenario` replays a previously captured gameplay session through the live Slate input pipeline — same code path real key/mouse events take, so input handlers, IMCs, and game-side logic all fire normally. Backed by the `UClaudeInputRecorder` subsystem in the `ClaudeUnrealBridge` editor plugin.
+
+### Per-project setup (one-time)
+1. Enable `ClaudeUnrealBridge` in the project's `.uproject` Plugins list (`{"Name": "ClaudeUnrealBridge", "Enabled": true}`)
+2. Build the project's editor target once so plugin binaries land in `<Plugin>/Binaries/Mac/`
+3. Recordings will live in `<Project>/Saved/ClaudeRecordings/<name>.json` and are JSON, self-describing (carry `viewportOriginX/Y/Width/Height`, used by playback to keep aim correct regardless of playback window size)
+
+### Capturing a recording
+In the running editor's console:
+- `Rec.Start <name>` — start capturing Slate input + camera samples
+- (play normally)
+- `Rec.Stop <name>` — finalise the JSON. The recorder trims the trailing console keystrokes (the very command you just typed) automatically (`Rec.TrimConsole 1`, default on).
+
+### Replaying via MCP
+Pass a `playRecording` step to `run-scenario`:
+```json
+{ "type": "playRecording", "name": "fishtest4", "seekPawn": true }
+```
+The runner resolves a bare name against `<Project>/Saved/ClaudeRecordings/`. Optional `mappingContexts: ["/Game/.../IMC_X"]` overrides the IMC auto-discovery (only needed if the headless boot skips a UI screen that normally calls `AddMappingContext`).
+
+### Replaying via the smoke test
+`mcp-server/tests/verify-play-recording.js` is env-var driven and skips with exit 0 when unconfigured:
+```bash
+CLAUDE_TEST_PROJECT=/path/to/MyProject \
+CLAUDE_TEST_RECORDING=mytest \
+CLAUDE_TEST_MAP=/Game/Maps/MyMap \
+CLAUDE_TEST_VISIBLE=1            # optional — drops -RenderOffscreen so you can watch + hear it
+CLAUDE_TEST_IMC=/Game/.../IMC_X  # optional — comma-separated, overrides auto-discovery
+node mcp-server/tests/verify-play-recording.js
+```
+Asserts the run completed cleanly (duration matches recording ±25%, no `Rec.Play raised` in the log, IMC bind logged if requested). Doesn't assert game-specific outcomes — those vary with the project's RNG.
+
+### Behaviour notes
+- **Cursor stays put.** The scenario runner sets `Rec.SuppressCursor 1` before `Rec.Play`, so your physical mouse never gets warped during agent-driven playback.
+- **No focus theft.** Default playback uses `-RenderOffscreen` so the editor window never appears on screen.
+- **Aim is recording-resolution-independent.** The recorder snapshots its capture-time viewport rect and the playback dylib rebases mouse coords via an affine transform (scale + offset) against the live playback viewport — so a recording captured in PIE at one size replays correctly in a `-game` window at any other size.
+- **`Rec.SuppressCursor 0`** restores the cursor-follow behaviour (useful for human-interactive `Rec.Play <name>` from the editor console).
+- **`Rec.TrimConsole 0`** disables the auto-trim of trailing `Rec.Stop` keystrokes (rarely needed; only if you're recording console interactions on purpose).
 
 ## Slash commands
 
