@@ -858,6 +858,15 @@ def _handle_play_recording(step):
                 return True, "error", "recording not found: %s" % path
         except Exception:
             pass
+        # Suppress the OS cursor for agent-driven playback so the user's
+        # physical mouse doesn't get yanked around mid-scenario. The
+        # recorder dylib still routes Slate events to the right screen-
+        # space position for hit-testing — only the SetCursorPos call is
+        # gated by this cvar, so playback fidelity is unaffected.
+        try:
+            unreal.SystemLibrary.execute_console_command(_world(), "Rec.SuppressCursor 1")
+        except Exception as e:
+            _log("playRecording: Rec.SuppressCursor 1 raised: %s (continuing)" % e)
         # Kick off via console command — same path the user tested
         # interactively. Pass just the base name (recorder resolves to
         # standard dir) OR the full absolute path (recorder accepts both).
@@ -865,7 +874,7 @@ def _handle_play_recording(step):
             unreal.SystemLibrary.execute_console_command(_world(), "Rec.Play %s" % path)
             sub["kicked_off"] = True
             sub["last_status_log"] = _game_seconds()
-            _log("playRecording: kicked off Rec.Play %s" % path)
+            _log("playRecording: kicked off Rec.Play %s (cursor suppressed)" % path)
         except Exception as e:
             return True, "error", "Rec.Play raised: %s" % e
         return False, "ok", None  # keep ticking while playback runs
