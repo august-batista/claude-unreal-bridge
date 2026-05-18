@@ -114,7 +114,11 @@ export function registerRunScenarioTool(server) {
             .max(2000)
             .default(150)
             .describe("Max log lines to include in the response. Set to 0 to skip log embedding (use `read-logs` afterwards)."),
-    }, async ({ projectPath, mapPath, mode, steps, execCmds, timeoutMs, logCategories, minSeverity, pattern, maxLogLines, }) => {
+        visible: z
+            .boolean()
+            .default(false)
+            .describe("Only affects scenarios that need a real RHI (e.g. playRecording). When true, the editor window appears on screen so you can watch the replay — useful for debugging. Default false (offscreen, no focus theft)."),
+    }, async ({ projectPath, mapPath, mode, steps, execCmds, timeoutMs, logCategories, minSeverity, pattern, maxLogLines, visible, }) => {
         try {
             const project = detectProject(projectPath);
             if (steps && steps.length > 0 && execCmds.length > 0) {
@@ -170,6 +174,30 @@ export function registerRunScenarioTool(server) {
                     return { ...s, name: resolved };
                 });
                 writeFileSync(scenarioPath, JSON.stringify(resolvedSteps, null, 2));
+                // The recording captures mouse coordinates in the absolute pixel
+                // space of whatever window the recorder was running in (typically
+                // a PIE viewport). To replay those clicks faithfully we have to
+                // pin the playback window to the same size, or the engine
+                // converts the (X,Y) into a different world ray and the player
+                // aims somewhere else. Read `viewportWidth`/`viewportHeight` from
+                // the first playRecording target; if either is present, pass
+                // `-ResX/-ResY -WindowMode=Windowed` to the editor launch.
+                // TODO(ClaudeUnrealBridge recorder): write these fields at capture
+                // time so playback doesn't need a one-time hand annotation.
+                const firstPlayRec = resolvedSteps.find((s) => s.type === "playRecording");
+                if (firstPlayRec && firstPlayRec.type === "playRecording") {
+                    try {
+                        const rec = JSON.parse(readFileSync(firstPlayRec.name, "utf-8").replace(/^﻿/, ""));
+                        const w = Number(rec.viewportWidth);
+                        const h = Number(rec.viewportHeight);
+                        if (Number.isFinite(w) && w > 0 && Number.isFinite(h) && h > 0) {
+                            argv.push(`-ResX=${Math.round(w)}`);
+                            argv.push(`-ResY=${Math.round(h)}`);
+                            argv.push("-WindowMode=Windowed");
+                        }
+                    }
+                    catch { /* missing or unparseable — Python runner will surface */ }
+                }
                 const runnerPath = join(pluginRoot, "python-scripts", "scenario_runner.py");
                 // UE's `py` console command auto-loads a .py file given as its
                 // argument. (`py.execfile` is not a real subcommand — UE will
@@ -190,11 +218,21 @@ export function registerRunScenarioTool(server) {
             //   keep -game (gameplay world boots normally, no editor UI)
             //   drop -nullrhi (Slate input routing into the focused viewport
             //                  needs a real RHI to set up the widget tree)
-            //   add -RenderOffscreen (renders to backbuffer, no on-screen window
-            //                         appears, so no focus steal on macOS)
-            const headlessFlags = wantsRecording
-                ? ["-unattended", "-nopause", "-nosound", "-nosplash", "-RenderOffscreen"]
-                : undefined; // other scripted steps run under the default (with -nullrhi)
+            //   add -RenderOffscreen by default (renders to backbuffer, no on-
+            //                                    screen window, no focus steal)
+            //   …or omit -RenderOffscreen when visible=true so the user can
+            //   watch the replay (drops -nosound too — debugging is easier
+            //   with audio cues).
+            let headlessFlags;
+            if (wantsRecording) {
+                if (visible) {
+                    headlessFlags = ["-unattended", "-nopause", "-nosplash"];
+                }
+                else {
+                    headlessFlags = ["-unattended", "-nopause", "-nosound", "-nosplash", "-RenderOffscreen"];
+                }
+            }
+            // else: undefined → editor-runner uses its default (with -nullrhi)
             const run = await runEditor(project, {
                 extraArgs: argv,
                 timeoutMs,

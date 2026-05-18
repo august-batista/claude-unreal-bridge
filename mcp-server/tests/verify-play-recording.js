@@ -21,6 +21,9 @@
  *                          to recording metadata + pawn defaults.
  *   CLAUDE_TEST_TIMEOUT_MS hard backstop. Defaults to recording duration +
  *                          60s, or 180_000ms if duration can't be read.
+ *   CLAUDE_TEST_VISIBLE    set to 1/true to drop -RenderOffscreen so the
+ *                          editor window appears on screen (debug mode).
+ *                          Default offscreen.
  */
 import { execSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
@@ -59,6 +62,8 @@ if (!existsSync(recordingPath)) {
 
 const recording = JSON.parse(readFileSync(recordingPath, "utf-8").replace(/^﻿/, ""));
 const recordingDuration = Number(recording.durationSeconds || 0);
+const recordedViewportW = Number(recording.viewportWidth) || 0;
+const recordedViewportH = Number(recording.viewportHeight) || 0;
 
 // Map: prefer env, then GameDefaultMap from DefaultEngine.ini.
 let map = process.env.CLAUDE_TEST_MAP;
@@ -81,6 +86,8 @@ const imcList = (process.env.CLAUDE_TEST_IMC || "")
   .split(",")
   .map(s => s.trim())
   .filter(Boolean);
+
+const visible = /^(1|true|yes)$/i.test(process.env.CLAUDE_TEST_VISIBLE || "");
 
 const timeoutMs = process.env.CLAUDE_TEST_TIMEOUT_MS
   ? Number(process.env.CLAUDE_TEST_TIMEOUT_MS)
@@ -110,13 +117,27 @@ console.log(`Project:   ${PROJECT}`);
 console.log(`Map:       ${map}`);
 console.log(`Recording: ${recordingPath}`);
 console.log(`Duration:  ${recordingDuration.toFixed(1)}s (timeout backstop ${(timeoutMs/1000).toFixed(0)}s)`);
+console.log(`Viewport:  ${recordedViewportW && recordedViewportH ? `${recordedViewportW}x${recordedViewportH} (from recording)` : "(not specified — playback uses default)"}`);
 console.log(`IMCs:      ${imcList.length ? imcList.join(", ") : "(let runner discover)"}`);
+console.log(`Visible:   ${visible ? "yes — editor window will appear" : "no (offscreen)"}`);
 console.log(`Log path:  ${logPath}`);
 console.log("");
-console.log("BEGIN PLAYBACK — no window should appear during the next ~" + Math.ceil(recordingDuration) + "s");
+console.log(visible
+  ? `BEGIN PLAYBACK — editor window will pop up for ~${Math.ceil(recordingDuration)}s`
+  : `BEGIN PLAYBACK — no window should appear during the next ~${Math.ceil(recordingDuration)}s`);
 console.log("");
 
 const startedAt = Date.now();
+
+// Pin the playback window to the recording's capture-time viewport size if
+// it has one. Slate-level recordings store absolute screen-space pixel
+// coordinates; the recorder dylib subtracts viewportOriginX/Y on playback
+// and adds the playback viewport's own origin, but only the SIZE pinning
+// happens here on the launcher side. See run-scenario.ts for the matching
+// prod path.
+const viewportArgs = (recordedViewportW > 0 && recordedViewportH > 0)
+  ? [`-ResX=${Math.round(recordedViewportW)}`, `-ResY=${Math.round(recordedViewportH)}`, "-WindowMode=Windowed"]
+  : [];
 
 const run = await runEditor(project, {
   extraArgs: [
@@ -124,12 +145,16 @@ const run = await runEditor(project, {
     map,
     `-ExecCmds=py ${runnerScript}`,
     "-log",
+    ...viewportArgs,
   ],
   timeoutMs,
-  // Same `-RenderOffscreen` config that run-scenario.ts uses for the
-  // playRecording branch: real RHI for Slate input routing, no on-screen
-  // window on macOS.
-  headlessFlags: ["-unattended", "-nopause", "-nosound", "-nosplash", "-RenderOffscreen"],
+  // Match run-scenario.ts's playRecording branch. Default: real RHI for
+  // Slate routing + -RenderOffscreen so no on-screen window appears.
+  // Visible mode: drop -RenderOffscreen and -nosound so the user can
+  // watch + hear the replay.
+  headlessFlags: visible
+    ? ["-unattended", "-nopause", "-nosplash"]
+    : ["-unattended", "-nopause", "-nosound", "-nosplash", "-RenderOffscreen"],
   env: {
     CLAUDE_SCENARIO_JSON: stepsPath,
     CLAUDE_SCENARIO_RESULT: resultPath,
