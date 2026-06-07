@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { UEInstallation } from "../types/ue-project.js";
 
@@ -34,6 +34,45 @@ export const HOST_PLATFORM: Record<string, string> = {
   linux: "Linux",
 };
 
+// Engine-registry files mapping a project's EngineAssociation GUID -> engine root.
+// This is how the Epic launcher / Setup registers source & custom-built engines
+// (e.g. a from-source build outside the standard install dir). Windows uses the
+// registry (HKCU\Software\Epic Games\Unreal Engine\Builds) — not handled here yet.
+const ENGINE_REGISTRY_INIS: Record<string, string[]> = {
+  darwin: ["Library/Application Support/Epic/UnrealEngine/Install.ini"],
+  linux: [".config/Epic/UnrealEngine/Install.ini"],
+};
+
+/** Strip braces/whitespace and upper-case so "{e338...}" and "E338..." compare equal. */
+function normalizeGuid(s: string): string {
+  return s.replace(/[{}\s]/g, "").toUpperCase();
+}
+
+/** GUID (normalized) -> engine root path, from the platform's engine registry. */
+function readRegisteredEngines(): Record<string, string> {
+  const out: Record<string, string> = {};
+  const home = process.env.HOME || "";
+  if (!home) return out;
+  for (const rel of ENGINE_REGISTRY_INIS[process.platform] ?? []) {
+    const ini = join(home, rel);
+    if (!existsSync(ini)) continue;
+    let inInstallations = false;
+    for (const raw of readFileSync(ini, "utf-8").split(/\r?\n/)) {
+      const line = raw.trim();
+      if (line.startsWith("[")) {
+        inInstallations = /^\[installations\]$/i.test(line);
+        continue;
+      }
+      const eq = line.indexOf("=");
+      if (!inInstallations || eq < 0) continue;
+      const guid = normalizeGuid(line.slice(0, eq));
+      const path = line.slice(eq + 1).trim();
+      if (guid && path) out[guid] = path;
+    }
+  }
+  return out;
+}
+
 let cachedInstallations: UEInstallation[] | null = null;
 
 export function findUEInstallations(): UEInstallation[] {
@@ -62,7 +101,19 @@ export function findUEInstallations(): UEInstallation[] {
     }
   }
 
-  // Sort by version descending (newest first)
+  // Registered engines (source / custom builds outside the standard dir), discovered
+  // via the engine registry. Added AFTER the standard installs so that a plain version
+  // match (e.g. "5.7") still prefers the stock install; a project that wants its source
+  // engine selects it by GUID in findBestInstallation.
+  for (const enginePath of Object.values(readRegisteredEngines())) {
+    if (existsSync(enginePath) && !installations.some((i) => i.path === enginePath)) {
+      const install = tryParseInstallation(enginePath, platform);
+      if (install) installations.push(install);
+    }
+  }
+
+  // Sort by version descending (newest first). Stable, so equal versions keep
+  // insertion order (standard installs before registered source builds).
   installations.sort((a, b) => compareVersions(b.version, a.version));
 
   cachedInstallations = installations;
@@ -76,6 +127,14 @@ export function findBestInstallation(
   if (installations.length === 0) return null;
 
   if (targetVersion) {
+    // EngineAssociation is a GUID for source / custom-built engines — resolve it to the
+    // engine that project is actually associated with (and built for) via the registry.
+    const enginePath = readRegisteredEngines()[normalizeGuid(targetVersion)];
+    if (enginePath) {
+      const byPath = installations.find((i) => i.path === enginePath);
+      if (byPath) return byPath;
+    }
+
     // Find exact or closest match
     const exact = installations.find((i) => i.version === targetVersion);
     if (exact) return exact;
@@ -107,10 +166,23 @@ function tryParseInstallation(
 
   if (!existsSync(editorCmdPath)) return null;
 
-  // Extract version from directory name (UE_5.7 -> 5.7)
+  // Version: prefer the directory name (UE_5.7 -> 5.7); fall back to Engine/Build/Build.version
+  // for source/custom builds whose folder isn't named UE_x.y.
   const dirName = enginePath.split("/").pop() || "";
   const versionMatch = dirName.match(/UE_(\d+\.\d+(?:\.\d+)?)/);
-  const version = versionMatch ? versionMatch[1] : "unknown";
+  let version = versionMatch ? versionMatch[1] : "unknown";
+  if (version === "unknown") {
+    try {
+      const bv = JSON.parse(
+        readFileSync(join(enginePath, "Engine/Build/Build.version"), "utf-8"),
+      );
+      if (typeof bv.MajorVersion === "number" && typeof bv.MinorVersion === "number") {
+        version = `${bv.MajorVersion}.${bv.MinorVersion}`;
+      }
+    } catch {
+      /* leave as "unknown" */
+    }
+  }
 
   return {
     version,
