@@ -4,6 +4,7 @@ import { writeFileSync } from "node:fs";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { detectProject } from "../ue-bridge/project-detector.js";
 import { runPythonInUE } from "../ue-bridge/python-runner.js";
+import { progressFromExtra } from "../mcp/progress.js";
 import {
   scanProjectStructure,
   formatProjectOverview,
@@ -13,29 +14,41 @@ import type { BlueprintListEntry, ClassHierarchyNode } from "../types/blueprint.
 const pluginRoot = process.env.PLUGIN_ROOT || process.cwd();
 
 export function registerGenerateContextTool(server: McpServer): void {
-  server.tool(
+  server.registerTool(
     "generate-context",
-    "Generate a comprehensive UNREAL_CONTEXT.md file for a UE project, including project overview, blueprint inventory, and class hierarchy.",
     {
-      projectPath: z
-        .string()
-        .describe("Absolute path to the UE project directory"),
-      outputPath: z
-        .string()
-        .optional()
-        .describe(
-          "Where to write the context file. Defaults to UNREAL_CONTEXT.md in the project root.",
-        ),
-      sections: z
-        .array(
-          z.enum(["overview", "blueprints", "classes", "hierarchy"]),
-        )
-        .default(["overview", "blueprints", "classes", "hierarchy"])
-        .describe("Which sections to include"),
+      title: "Generate Project Context",
+      description:
+        "Generate a comprehensive UNREAL_CONTEXT.md file for a UE project, including project overview, blueprint inventory, and class hierarchy. Writes the file to disk.",
+      inputSchema: {
+        projectPath: z
+          .string()
+          .describe("Absolute path to the UE project directory"),
+        outputPath: z
+          .string()
+          .optional()
+          .describe(
+            "Where to write the context file. Defaults to UNREAL_CONTEXT.md in the project root.",
+          ),
+        sections: z
+          .array(
+            z.enum(["overview", "blueprints", "classes", "hierarchy"]),
+          )
+          .default(["overview", "blueprints", "classes", "hierarchy"])
+          .describe("Which sections to include"),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
-    async ({ projectPath, outputPath, sections }) => {
+    async ({ projectPath, outputPath, sections }, extra) => {
       try {
         const project = detectProject(projectPath);
+        const onProgress = progressFromExtra(extra);
+        const control = { signal: extra.signal, onProgress };
         const contextLines: string[] = [];
 
         // Project overview (filesystem-based, no UE needed)
@@ -48,8 +61,9 @@ export function registerGenerateContextTool(server: McpServer): void {
         // Blueprint inventory (requires UE)
         let blueprints: BlueprintListEntry[] | null = null;
         if (sections.includes("blueprints")) {
+          onProgress?.("Extracting blueprint inventory…");
           const listScript = join(pluginRoot, "python-scripts", "list_blueprints.py");
-          const listResult = await runPythonInUE(project, listScript);
+          const listResult = await runPythonInUE(project, listScript, {}, undefined, control);
 
           if (listResult.success && listResult.data) {
             blueprints = listResult.data as BlueprintListEntry[];
@@ -88,12 +102,13 @@ export function registerGenerateContextTool(server: McpServer): void {
 
         // Class hierarchy (requires UE)
         if (sections.includes("hierarchy")) {
+          onProgress?.("Extracting class hierarchy…");
           const hierarchyScript = join(
             pluginRoot,
             "python-scripts",
             "extract_class_hierarchy.py",
           );
-          const hierarchyResult = await runPythonInUE(project, hierarchyScript);
+          const hierarchyResult = await runPythonInUE(project, hierarchyScript, {}, undefined, control);
 
           if (hierarchyResult.success && hierarchyResult.data) {
             const hierarchy = hierarchyResult.data as ClassHierarchyNode[];

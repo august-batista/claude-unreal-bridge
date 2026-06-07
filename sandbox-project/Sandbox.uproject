@@ -25,6 +25,10 @@
 		{
 			"Name": "FunctionalTestingEditor",
 			"Enabled": true
+		},
+		{
+			"Name": "ClaudeBPGraph",
+			"Enabled": true
 		}
 	]
 }

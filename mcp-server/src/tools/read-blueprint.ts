@@ -7,38 +7,51 @@ import {
   formatBlueprintAsMarkdown,
   validateBlueprintJson,
 } from "../parsers/blueprint-json.js";
+import { progressFromExtra } from "../mcp/progress.js";
 
 const pluginRoot = process.env.PLUGIN_ROOT || process.cwd();
 
 export function registerReadBlueprintTool(server: McpServer): void {
-  server.tool(
+  server.registerTool(
     "read-blueprint",
-    "Read a specific Unreal Engine blueprint and return its variables, functions, event graph logic, and components as structured text. Accepts asset paths (/Game/Blueprints/BP_Player) or file paths.",
     {
-      projectPath: z
-        .string()
-        .describe("Absolute path to the UE project directory"),
-      blueprintPath: z
-        .string()
-        .describe(
-          "Asset path (e.g., /Game/Blueprints/BP_Player) or file path to the blueprint",
-        ),
-      detail: z
-        .enum(["summary", "full", "graph-only"])
-        .default("full")
-        .describe(
-          "Level of detail: summary (vars/funcs only), full (everything including graphs), graph-only (just node graphs)",
-        ),
+      title: "Read Blueprint",
+      description:
+        "Read a specific Unreal Engine blueprint and return its variables, functions, event graph logic, and components as structured text. Accepts asset paths (/Game/Blueprints/BP_Player) or file paths.",
+      inputSchema: {
+        projectPath: z
+          .string()
+          .describe("Absolute path to the UE project directory"),
+        blueprintPath: z
+          .string()
+          .describe(
+            "Asset path (e.g., /Game/Blueprints/BP_Player) or file path to the blueprint",
+          ),
+        detail: z
+          .enum(["summary", "full", "graph-only"])
+          .default("full")
+          .describe(
+            "Level of detail: summary (vars/funcs only), full (everything including graphs), graph-only (just node graphs)",
+          ),
+      },
+      annotations: {
+        readOnlyHint: true,
+        openWorldHint: false,
+      },
     },
-    async ({ projectPath, blueprintPath, detail }) => {
+    async ({ projectPath, blueprintPath, detail }, extra) => {
       try {
         const project = detectProject(projectPath);
         const assetPath = normalizeToAssetPath(blueprintPath, project);
         const scriptPath = join(pluginRoot, "python-scripts", "extract_blueprint.py");
 
-        const result = await runPythonInUE(project, scriptPath, {
-          asset_path: assetPath,
-        });
+        const result = await runPythonInUE(
+          project,
+          scriptPath,
+          { asset_path: assetPath },
+          undefined,
+          { signal: extra.signal, onProgress: progressFromExtra(extra) },
+        );
 
         if (!result.success || !result.data) {
           return {

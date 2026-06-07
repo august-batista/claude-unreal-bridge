@@ -13,6 +13,9 @@ sandbox-project/Saved/
 sandbox-project/.vs/
 sandbox-project/*.sln
 sandbox-project/*.xcworkspace/
+# Plugin build output (keep Source/ + .uplugin, drop compiled artefacts)
+sandbox-project/Plugins/*/Binaries/
+sandbox-project/Plugins/*/Intermediate/
 
 # Machine-specific verification scripts (point at user projects, not the sandbox)
 mcp-server/tests/verify-bearships-*.js

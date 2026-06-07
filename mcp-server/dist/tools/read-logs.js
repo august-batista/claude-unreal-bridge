@@ -3,6 +3,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { detectProject, platformLogFallbacks, } from "../ue-bridge/project-detector.js";
 import { filterLog, formatLogEntries, } from "../parsers/log-output.js";
+import { readLogsStructuredShape } from "../mcp/output-schemas.js";
 /**
  * List all log files for the project, sorted most recent first.
  *
@@ -64,49 +65,59 @@ function findLogs(projectPath, projectName, fallbacks) {
     return result;
 }
 export function registerReadLogsTool(server) {
-    server.tool("read-logs", "Read and filter the UE editor/runtime log written to <Project>/Saved/Logs/. " +
-        "Use after compile, run-tests, or run-scenario to inspect what happened. " +
-        "Filters by category (LogBlueprint, LogTemp, etc.), severity, and regex.", {
-        projectPath: z
-            .string()
-            .describe("Absolute path to the UE project directory"),
-        runIndex: z
-            .number()
-            .int()
-            .min(0)
-            .default(0)
-            .describe("Which run's log to read. 0 = most recent (default). 1 = previous run, etc. Backup logs are kept up to UE's rotation limit."),
-        categories: z
-            .array(z.string())
-            .optional()
-            .describe("Restrict to these UE log categories, e.g. [\"LogBlueprint\", \"LogTemp\"]. Case-insensitive. Omit to include all categories."),
-        minSeverity: z
-            .enum([
-            "fatal",
-            "error",
-            "warning",
-            "display",
-            "log",
-            "verbose",
-            "veryverbose",
-        ])
-            .default("warning")
-            .describe("Lowest severity to include. Default `warning` keeps signal high. Use `display` to see normal log lines, `verbose` for everything."),
-        pattern: z
-            .string()
-            .optional()
-            .describe("Optional regex matched (case-insensitive) against the message body."),
-        maxResults: z
-            .number()
-            .int()
-            .min(1)
-            .max(2000)
-            .default(200)
-            .describe("Max entries to return. The most recent matches are kept. Default 200."),
-        listAvailable: z
-            .boolean()
-            .default(false)
-            .describe("If true, just list the available log files (path, mtime, size) without reading content."),
+    server.registerTool("read-logs", {
+        title: "Read Logs",
+        description: "Read and filter the UE editor/runtime log written to <Project>/Saved/Logs/. " +
+            "Use after compile, run-tests, or run-scenario to inspect what happened. " +
+            "Filters by category (LogBlueprint, LogTemp, etc.), severity, and regex. " +
+            "Returns structured log entries alongside a readable rendering.",
+        inputSchema: {
+            projectPath: z
+                .string()
+                .describe("Absolute path to the UE project directory"),
+            runIndex: z
+                .number()
+                .int()
+                .min(0)
+                .default(0)
+                .describe("Which run's log to read. 0 = most recent (default). 1 = previous run, etc. Backup logs are kept up to UE's rotation limit."),
+            categories: z
+                .array(z.string())
+                .optional()
+                .describe("Restrict to these UE log categories, e.g. [\"LogBlueprint\", \"LogTemp\"]. Case-insensitive. Omit to include all categories."),
+            minSeverity: z
+                .enum([
+                "fatal",
+                "error",
+                "warning",
+                "display",
+                "log",
+                "verbose",
+                "veryverbose",
+            ])
+                .default("warning")
+                .describe("Lowest severity to include. Default `warning` keeps signal high. Use `display` to see normal log lines, `verbose` for everything."),
+            pattern: z
+                .string()
+                .optional()
+                .describe("Optional regex matched (case-insensitive) against the message body."),
+            maxResults: z
+                .number()
+                .int()
+                .min(1)
+                .max(2000)
+                .default(200)
+                .describe("Max entries to return. The most recent matches are kept. Default 200."),
+            listAvailable: z
+                .boolean()
+                .default(false)
+                .describe("If true, just list the available log files (path, mtime, size) without reading content."),
+        },
+        outputSchema: readLogsStructuredShape,
+        annotations: {
+            readOnlyHint: true,
+            openWorldHint: false,
+        },
     }, async ({ projectPath, runIndex, categories, minSeverity, pattern, maxResults, listAvailable, }) => {
         try {
             const project = detectProject(projectPath);
@@ -125,6 +136,7 @@ export function registerReadLogsTool(server) {
                                 ` The project hasn't been run yet — try \`compile-blueprints\`, \`run-tests\`, or \`run-scenario\` first.`,
                         },
                     ],
+                    structuredContent: { mode: "list", logs: [] },
                 };
             }
             if (listAvailable) {
@@ -137,10 +149,22 @@ export function registerReadLogsTool(server) {
                 }
                 return {
                     content: [{ type: "text", text: lines.join("\n") }],
+                    structuredContent: {
+                        mode: "list",
+                        logs: logs.map((l, i) => ({
+                            index: i,
+                            path: l.path,
+                            isCurrent: l.isCurrent,
+                            source: l.source,
+                            mtime: l.mtime.toISOString(),
+                            sizeBytes: l.sizeBytes,
+                        })),
+                    },
                 };
             }
             if (runIndex >= logs.length) {
                 return {
+                    isError: true,
                     content: [
                         {
                             type: "text",
@@ -161,10 +185,29 @@ export function registerReadLogsTool(server) {
             const formatted = formatLogEntries(entries, stats, fileLabel);
             return {
                 content: [{ type: "text", text: formatted }],
+                structuredContent: {
+                    mode: "read",
+                    file: {
+                        path: target.path,
+                        isCurrent: target.isCurrent,
+                        source: target.source,
+                        mtime: target.mtime.toISOString(),
+                        sizeBytes: target.sizeBytes,
+                    },
+                    entries: entries.map((e) => ({
+                        timestamp: e.timestamp,
+                        frame: e.frame,
+                        category: e.category,
+                        severity: e.severity,
+                        message: e.message,
+                    })),
+                    stats,
+                },
             };
         }
         catch (err) {
             return {
+                isError: true,
                 content: [
                     {
                         type: "text",

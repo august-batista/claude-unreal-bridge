@@ -1,0 +1,20 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "0.1.0",
+	"FriendlyName": "Claude BP Graph (spike)",
+	"Description": "Editor-only library that adds / deletes / wires Blueprint K2 graph nodes from Python via standard editor C++ APIs (FGraphNodeCreator, UEdGraphSchema::TryCreateConnection, UEdGraph::RemoveNode, FKismetEditorUtilities::CompileBlueprint). Spike for the claude-unreal node-editing tools; the library class ports verbatim into ClaudeUnrealBridgeEditor.",
+	"Category": "Editor",
+	"CreatedBy": "claude-unreal",
+	"CanContainContent": false,
+	"IsBetaVersion": true,
+	"Installed": false,
+	"EnabledByDefault": false,
+	"Modules": [
+		{
+			"Name": "ClaudeBPGraphEditor",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		}
+	]
+}

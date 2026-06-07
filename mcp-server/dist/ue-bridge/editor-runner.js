@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { findBestInstallation } from "./engine-locator.js";
 import { defaultProjectLogPath } from "./project-detector.js";
+import { linkAbort, startHeartbeat } from "./run-control.js";
 const DEFAULT_HEADLESS = [
     "-unattended",
     "-nopause",
@@ -72,6 +73,9 @@ export async function runEditor(project, options) {
                 catch { /* same */ }
             }, 5000);
         };
+        const stopHeartbeat = startHeartbeat(options.control?.onProgress, options.progressLabel ?? "Editor running");
+        const detachAbort = linkAbort(options.control?.signal, kill);
+        options.control?.onProgress?.("Launching editor…");
         const timer = setTimeout(() => {
             timedOut = true;
             kill();
@@ -82,6 +86,8 @@ export async function runEditor(project, options) {
         }
         proc.on("close", (exitCode) => {
             clearTimeout(timer);
+            stopHeartbeat();
+            detachAbort();
             if (typeof cleanupOnSpawn === "function") {
                 try {
                     cleanupOnSpawn();
@@ -99,6 +105,8 @@ export async function runEditor(project, options) {
         });
         proc.on("error", (err) => {
             clearTimeout(timer);
+            stopHeartbeat();
+            detachAbort();
             if (typeof cleanupOnSpawn === "function") {
                 try {
                     cleanupOnSpawn();

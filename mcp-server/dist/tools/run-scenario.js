@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { detectProject, defaultProjectLogPath, } from "../ue-bridge/project-detector.js";
 import { runEditor } from "../ue-bridge/editor-runner.js";
+import { progressFromExtra } from "../mcp/progress.js";
 import { filterLog, formatLogEntries, } from "../parsers/log-output.js";
 const pluginRoot = process.env.PLUGIN_ROOT || process.cwd();
 // Zod schema mirroring ScenarioStep — has to be runtime-validated because
@@ -59,66 +60,75 @@ const stepSchema = z.discriminatedUnion("type", [
     }),
 ]);
 export function registerRunScenarioTool(server) {
-    server.tool("run-scenario", "Boot a map headlessly and either (a) run a single -ExecCmds and capture logs, or (b) execute a scripted step list that drives the actual player input pipeline via EnhancedInput. " +
-        "Use the step list (`steps` parameter) when you need to test player logic — held buttons, sequenced inputs, log-reactive flows. " +
-        "Use the simple form (`execCmds`) for quick boot-and-cvar checks.", {
-        projectPath: z
-            .string()
-            .describe("Absolute path to the UE project directory"),
-        mapPath: z
-            .string()
-            .describe("Map to boot. Asset path (`/Game/Maps/MyMap`) or short name."),
-        mode: z
-            .enum(["editor", "game"])
-            .default("game")
-            .describe("`game` (default) launches with `-game` so gameplay logic actually runs. `editor` for editor-only systems."),
-        steps: z
-            .array(stepSchema)
-            .optional()
-            .describe("Scripted step list. Drives the actual player input pipeline (EnhancedInput injection), supports holds, log-reactive waits, possess. Mutually exclusive with `execCmds`."),
-        execCmds: z
-            .array(z.string())
-            .default([])
-            .describe("Simple form: console commands sent at boot via -ExecCmds (joined with `;`, but note UE drops anything after the first command unreliably — prefer `steps` for multi-command sequences). Include `Quit` if you want a clean exit."),
-        timeoutMs: z
-            .number()
-            .int()
-            .min(60_000)
-            .max(3_600_000)
-            .default(300_000)
-            .describe("Hard timeout backstop. The process is force-killed if it overruns."),
-        logCategories: z
-            .array(z.string())
-            .optional()
-            .describe("Restrict captured log output to these categories (e.g. [\"LogBlueprint\", \"LogTemp\"]). Omit to include everything matching `minSeverity`."),
-        minSeverity: z
-            .enum([
-            "fatal",
-            "error",
-            "warning",
-            "display",
-            "log",
-            "verbose",
-            "veryverbose",
-        ])
-            .default("display")
-            .describe("Lowest log severity to include in the captured slice. Default `display` keeps gameplay UE_LOG output visible."),
-        pattern: z
-            .string()
-            .optional()
-            .describe("Optional regex (case-insensitive) to filter log message bodies."),
-        maxLogLines: z
-            .number()
-            .int()
-            .min(0)
-            .max(2000)
-            .default(150)
-            .describe("Max log lines to include in the response. Set to 0 to skip log embedding (use `read-logs` afterwards)."),
-        visible: z
-            .boolean()
-            .default(false)
-            .describe("Only affects scenarios that need a real RHI (e.g. playRecording). When true, the editor window appears on screen so you can watch the replay — useful for debugging. Default false (offscreen, no focus theft)."),
-    }, async ({ projectPath, mapPath, mode, steps, execCmds, timeoutMs, logCategories, minSeverity, pattern, maxLogLines, visible, }) => {
+    server.registerTool("run-scenario", {
+        title: "Run Gameplay Scenario",
+        description: "Boot a map headlessly and either (a) run a single -ExecCmds and capture logs, or (b) execute a scripted step list that drives the actual player input pipeline via EnhancedInput. " +
+            "Use the step list (`steps` parameter) when you need to test player logic — held buttons, sequenced inputs, log-reactive flows. " +
+            "Use the simple form (`execCmds`) for quick boot-and-cvar checks.",
+        inputSchema: {
+            projectPath: z
+                .string()
+                .describe("Absolute path to the UE project directory"),
+            mapPath: z
+                .string()
+                .describe("Map to boot. Asset path (`/Game/Maps/MyMap`) or short name."),
+            mode: z
+                .enum(["editor", "game"])
+                .default("game")
+                .describe("`game` (default) launches with `-game` so gameplay logic actually runs. `editor` for editor-only systems."),
+            steps: z
+                .array(stepSchema)
+                .optional()
+                .describe("Scripted step list. Drives the actual player input pipeline (EnhancedInput injection), supports holds, log-reactive waits, possess. Mutually exclusive with `execCmds`."),
+            execCmds: z
+                .array(z.string())
+                .default([])
+                .describe("Simple form: console commands sent at boot via -ExecCmds (joined with `;`, but note UE drops anything after the first command unreliably — prefer `steps` for multi-command sequences). Include `Quit` if you want a clean exit."),
+            timeoutMs: z
+                .number()
+                .int()
+                .min(60_000)
+                .max(3_600_000)
+                .default(300_000)
+                .describe("Hard timeout backstop. The process is force-killed if it overruns."),
+            logCategories: z
+                .array(z.string())
+                .optional()
+                .describe("Restrict captured log output to these categories (e.g. [\"LogBlueprint\", \"LogTemp\"]). Omit to include everything matching `minSeverity`."),
+            minSeverity: z
+                .enum([
+                "fatal",
+                "error",
+                "warning",
+                "display",
+                "log",
+                "verbose",
+                "veryverbose",
+            ])
+                .default("display")
+                .describe("Lowest log severity to include in the captured slice. Default `display` keeps gameplay UE_LOG output visible."),
+            pattern: z
+                .string()
+                .optional()
+                .describe("Optional regex (case-insensitive) to filter log message bodies."),
+            maxLogLines: z
+                .number()
+                .int()
+                .min(0)
+                .max(2000)
+                .default(150)
+                .describe("Max log lines to include in the response. Set to 0 to skip log embedding (use `read-logs` afterwards)."),
+            visible: z
+                .boolean()
+                .default(false)
+                .describe("Only affects scenarios that need a real RHI (e.g. playRecording). When true, the editor window appears on screen so you can watch the replay — useful for debugging. Default false (offscreen, no focus theft)."),
+        },
+        annotations: {
+            readOnlyHint: false,
+            destructiveHint: false,
+            openWorldHint: true,
+        },
+    }, async ({ projectPath, mapPath, mode, steps, execCmds, timeoutMs, logCategories, minSeverity, pattern, maxLogLines, visible, }, extra) => {
         try {
             const project = detectProject(projectPath);
             if (steps && steps.length > 0 && execCmds.length > 0) {
@@ -233,11 +243,14 @@ export function registerRunScenarioTool(server) {
                 }
             }
             // else: undefined → editor-runner uses its default (with -nullrhi)
+            const onProgress = progressFromExtra(extra);
             const run = await runEditor(project, {
                 extraArgs: argv,
                 timeoutMs,
                 env: envExtra,
                 headlessFlags,
+                control: { signal: extra.signal, onProgress },
+                progressLabel: "Running scenario",
                 // For scripted scenarios, poll for the result JSON. The Python
                 // runner writes it when the step list completes; we then SIGTERM
                 // because quit_game can't reliably terminate without a world ref
@@ -251,6 +264,7 @@ export function registerRunScenarioTool(server) {
                                 return;
                             if (existsSync(resultFile)) {
                                 killed = true;
+                                onProgress?.("Scenario result written — finalizing…");
                                 // Give the runner ~1s to also try its own quit (and
                                 // anything mid-flush) before we SIGTERM.
                                 setTimeout(() => kill(), 1000);
@@ -260,6 +274,18 @@ export function registerRunScenarioTool(server) {
                     }
                     : undefined,
             });
+            if (extra.signal?.aborted) {
+                if (scenarioDir) {
+                    try {
+                        rmSync(scenarioDir, { recursive: true, force: true });
+                    }
+                    catch { /* best effort */ }
+                }
+                return {
+                    isError: true,
+                    content: [{ type: "text", text: "Scenario run cancelled." }],
+                };
+            }
             const lines = [];
             const status = run.timedOut
                 ? "TIMED OUT"

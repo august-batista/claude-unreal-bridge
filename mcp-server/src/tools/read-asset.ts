@@ -8,16 +8,24 @@ import {
 } from "../ue-bridge/project-detector.js";
 
 export function registerReadAssetTool(server: McpServer): void {
-  server.tool(
+  server.registerTool(
     "read-asset",
-    "Read basic metadata about any Unreal Engine asset. Returns file path, size, type, and related files (.uexp, .ubulk). For blueprint-specific data, use read-blueprint instead.",
     {
-      projectPath: z
-        .string()
-        .describe("Absolute path to the UE project directory"),
-      assetPath: z
-        .string()
-        .describe("Asset path or file path to the UE asset"),
+      title: "Read Asset Metadata",
+      description:
+        "Read basic metadata about any Unreal Engine asset. Returns file path, size, type, and related files (.uexp, .ubulk). For blueprint-specific data, use read-blueprint instead.",
+      inputSchema: {
+        projectPath: z
+          .string()
+          .describe("Absolute path to the UE project directory"),
+        assetPath: z
+          .string()
+          .describe("Asset path or file path to the UE asset"),
+      },
+      annotations: {
+        readOnlyHint: true,
+        openWorldHint: false,
+      },
     },
     async ({ projectPath, assetPath }) => {
       try {

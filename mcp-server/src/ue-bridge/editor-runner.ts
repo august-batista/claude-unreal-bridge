@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import type { UEProject } from "../types/ue-project.js";
 import { findBestInstallation } from "./engine-locator.js";
 import { defaultProjectLogPath } from "./project-detector.js";
+import { linkAbort, startHeartbeat, type RunControl } from "./run-control.js";
 
 /**
  * Generic launcher for `UnrealEditor-Cmd <Project> [extraArgs...]`.
@@ -42,6 +43,10 @@ export interface EditorRunOptions {
     proc: ChildProcess,
     kill: () => void,
   ) => void | (() => void);
+  /** Cancellation + progress reporting. */
+  control?: RunControl;
+  /** Label for the progress heartbeat. Defaults to "Editor running". */
+  progressLabel?: string;
 }
 
 export interface EditorRunResult {
@@ -131,6 +136,13 @@ export async function runEditor(
       }, 5000);
     };
 
+    const stopHeartbeat = startHeartbeat(
+      options.control?.onProgress,
+      options.progressLabel ?? "Editor running",
+    );
+    const detachAbort = linkAbort(options.control?.signal, kill);
+    options.control?.onProgress?.("Launching editor…");
+
     const timer = setTimeout(() => {
       timedOut = true;
       kill();
@@ -143,6 +155,8 @@ export async function runEditor(
 
     proc.on("close", (exitCode) => {
       clearTimeout(timer);
+      stopHeartbeat();
+      detachAbort();
       if (typeof cleanupOnSpawn === "function") {
         try { cleanupOnSpawn(); } catch { /* best effort */ }
       }
@@ -158,6 +172,8 @@ export async function runEditor(
 
     proc.on("error", (err) => {
       clearTimeout(timer);
+      stopHeartbeat();
+      detachAbort();
       if (typeof cleanupOnSpawn === "function") {
         try { cleanupOnSpawn(); } catch { /* best effort */ }
       }

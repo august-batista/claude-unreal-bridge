@@ -1,4 +1,5 @@
 import type { UEProject, CppBuildResult, BuildConfiguration } from "../types/ue-project.js";
+import { type RunControl } from "./run-control.js";
 export interface BuildOptions {
     /** UBT target name. Defaults to `<ProjectName>Editor`. */
     target?: string;
@@ -10,6 +11,8 @@ export interface BuildOptions {
     timeoutMs?: number;
     /** Extra args to pass to UBT/Build.sh. */
     extraArgs?: string[];
+    /** Cancellation + progress reporting. */
+    control?: RunControl;
 }
 /**
  * Build a single UE C++ target via UnrealBuildTool.

@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { detectProject, normalizeToAssetPath } from "../ue-bridge/project-detector.js";
 import { runPythonInUE } from "../ue-bridge/python-runner.js";
+import { progressFromExtra } from "../mcp/progress.js";
 
 const pluginRoot = process.env.PLUGIN_ROOT || process.cwd();
 
@@ -41,36 +42,46 @@ function formatResult(data: SetPropertyResult): string {
 }
 
 export function registerSetBlueprintPropertyTool(server: McpServer): void {
-  server.tool(
+  server.registerTool(
     "set-blueprint-property",
-    "Set a property on a blueprint's component or on the blueprint itself (CDO). Use this to modify default values like MaxWalkSpeed on CharacterMovementComponent, jump velocity, gravity scale, etc. Changes are saved to the .uasset file.",
     {
-      projectPath: z
-        .string()
-        .describe("Absolute path to the UE project directory"),
-      blueprintPath: z
-        .string()
-        .describe(
-          "Asset path (e.g., /Game/Blueprints/BP_Player) or file path to the blueprint",
-        ),
-      componentClass: z
-        .string()
-        .optional()
-        .describe(
-          "UE component class name to target, e.g. CharacterMovementComponent, ProjectileMovementComponent. Omit to set a property directly on the blueprint CDO.",
-        ),
-      propertyName: z
-        .string()
-        .describe(
-          "Property name in PascalCase or snake_case, e.g. MaxWalkSpeed, JumpZVelocity, GravityScale",
-        ),
-      value: z
-        .string()
-        .describe(
-          "New value as a string. Numerics, booleans (true/false), and strings are supported.",
-        ),
+      title: "Set Blueprint Property",
+      description:
+        "Set a property on a blueprint's component or on the blueprint itself (CDO). Use this to modify default values like MaxWalkSpeed on CharacterMovementComponent, jump velocity, gravity scale, etc. Changes are saved to the .uasset file.",
+      inputSchema: {
+        projectPath: z
+          .string()
+          .describe("Absolute path to the UE project directory"),
+        blueprintPath: z
+          .string()
+          .describe(
+            "Asset path (e.g., /Game/Blueprints/BP_Player) or file path to the blueprint",
+          ),
+        componentClass: z
+          .string()
+          .optional()
+          .describe(
+            "UE component class name to target, e.g. CharacterMovementComponent, ProjectileMovementComponent. Omit to set a property directly on the blueprint CDO.",
+          ),
+        propertyName: z
+          .string()
+          .describe(
+            "Property name in PascalCase or snake_case, e.g. MaxWalkSpeed, JumpZVelocity, GravityScale",
+          ),
+        value: z
+          .string()
+          .describe(
+            "New value as a string. Numerics, booleans (true/false), and strings are supported.",
+          ),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
     },
-    async ({ projectPath, blueprintPath, componentClass, propertyName, value }) => {
+    async ({ projectPath, blueprintPath, componentClass, propertyName, value }, extra) => {
       try {
         const project = detectProject(projectPath);
         const assetPath = normalizeToAssetPath(blueprintPath, project);
@@ -89,7 +100,10 @@ export function registerSetBlueprintPropertyTool(server: McpServer): void {
           scriptArgs.component_class = componentClass;
         }
 
-        const result = await runPythonInUE(project, scriptPath, scriptArgs);
+        const result = await runPythonInUE(project, scriptPath, scriptArgs, undefined, {
+          signal: extra.signal,
+          onProgress: progressFromExtra(extra),
+        });
 
         if (!result.success || !result.data) {
           return {

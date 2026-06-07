@@ -1,4 +1,6 @@
 import type { UEProject } from "../types/ue-project.js";
+/** The most recently detected project, or undefined if no tool has run yet. */
+export declare function getActiveProject(): UEProject | undefined;
 export declare function detectProject(projectPath: string): UEProject;
 /**
  * Convert a file path to a UE asset path.

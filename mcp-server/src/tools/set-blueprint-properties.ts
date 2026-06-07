@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { detectProject, normalizeToAssetPath } from "../ue-bridge/project-detector.js";
 import { runPythonInUE } from "../ue-bridge/python-runner.js";
+import { progressFromExtra } from "../mcp/progress.js";
 
 const pluginRoot = process.env.PLUGIN_ROOT || process.cwd();
 
@@ -66,35 +67,45 @@ function formatBatchResult(data: BatchResult, assetPath: string): string {
 }
 
 export function registerSetBlueprintPropertiesTool(server: McpServer): void {
-  server.tool(
+  server.registerTool(
     "set-blueprint-properties",
-    "Set multiple properties on a blueprint in a single Unreal Engine session. More efficient than calling set-blueprint-property repeatedly when you need to change several values on the same blueprint.",
     {
-      projectPath: z
-        .string()
-        .describe("Absolute path to the UE project directory"),
-      blueprintPath: z
-        .string()
-        .describe("Asset path (e.g., /Game/Blueprints/BP_Player) or file path to the blueprint"),
-      changes: z
-        .array(
-          z.object({
-            componentClass: z
-              .string()
-              .optional()
-              .describe("UE component class name, e.g. CharacterMovementComponent. Omit to target the blueprint CDO."),
-            propertyName: z
-              .string()
-              .describe("Property name, e.g. MaxWalkSpeed"),
-            value: z
-              .string()
-              .describe("New value as a string, e.g. \"1800\""),
-          }),
-        )
-        .min(1)
-        .describe("List of property changes to apply"),
+      title: "Set Blueprint Properties (batch)",
+      description:
+        "Set multiple properties on a blueprint in a single Unreal Engine session. More efficient than calling set-blueprint-property repeatedly when you need to change several values on the same blueprint.",
+      inputSchema: {
+        projectPath: z
+          .string()
+          .describe("Absolute path to the UE project directory"),
+        blueprintPath: z
+          .string()
+          .describe("Asset path (e.g., /Game/Blueprints/BP_Player) or file path to the blueprint"),
+        changes: z
+          .array(
+            z.object({
+              componentClass: z
+                .string()
+                .optional()
+                .describe("UE component class name, e.g. CharacterMovementComponent. Omit to target the blueprint CDO."),
+              propertyName: z
+                .string()
+                .describe("Property name, e.g. MaxWalkSpeed"),
+              value: z
+                .string()
+                .describe("New value as a string, e.g. \"1800\""),
+            }),
+          )
+          .min(1)
+          .describe("List of property changes to apply"),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
     },
-    async ({ projectPath, blueprintPath, changes }) => {
+    async ({ projectPath, blueprintPath, changes }, extra) => {
       try {
         const project = detectProject(projectPath);
         const assetPath = normalizeToAssetPath(blueprintPath, project);
@@ -111,10 +122,16 @@ export function registerSetBlueprintPropertiesTool(server: McpServer): void {
           property_value: c.value,
         }));
 
-        const result = await runPythonInUE(project, scriptPath, {
-          asset_path: assetPath,
-          changes: JSON.stringify(changesPayload),
-        });
+        const result = await runPythonInUE(
+          project,
+          scriptPath,
+          {
+            asset_path: assetPath,
+            changes: JSON.stringify(changesPayload),
+          },
+          undefined,
+          { signal: extra.signal, onProgress: progressFromExtra(extra) },
+        );
 
         if (!result.success || !result.data) {
           return {

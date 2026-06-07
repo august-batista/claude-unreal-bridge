@@ -3,28 +3,37 @@ import { join } from "node:path";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { detectProject } from "../ue-bridge/project-detector.js";
 import { runPythonInUE } from "../ue-bridge/python-runner.js";
+import { progressFromExtra } from "../mcp/progress.js";
 import type { BlueprintListEntry } from "../types/blueprint.js";
 
 const pluginRoot = process.env.PLUGIN_ROOT || process.cwd();
 
 export function registerListBlueprintsTool(server: McpServer): void {
-  server.tool(
+  server.registerTool(
     "list-blueprints",
-    "List all blueprints in an Unreal Engine project. Returns asset paths, class names, parent classes, and types.",
     {
-      projectPath: z
-        .string()
-        .describe("Absolute path to the UE project directory (containing .uproject file)"),
-      filter: z
-        .string()
-        .optional()
-        .describe("Optional filter: class name, path prefix, or parent class name"),
-      type: z
-        .enum(["all", "actor", "widget", "animation", "interface"])
-        .default("all")
-        .describe("Filter by blueprint type"),
+      title: "List Blueprints",
+      description:
+        "List all blueprints in an Unreal Engine project. Returns asset paths, class names, parent classes, and types.",
+      inputSchema: {
+        projectPath: z
+          .string()
+          .describe("Absolute path to the UE project directory (containing .uproject file)"),
+        filter: z
+          .string()
+          .optional()
+          .describe("Optional filter: class name, path prefix, or parent class name"),
+        type: z
+          .enum(["all", "actor", "widget", "animation", "interface"])
+          .default("all")
+          .describe("Filter by blueprint type"),
+      },
+      annotations: {
+        readOnlyHint: true,
+        openWorldHint: false,
+      },
     },
-    async ({ projectPath, filter, type }) => {
+    async ({ projectPath, filter, type }, extra) => {
       try {
         const project = detectProject(projectPath);
         const scriptPath = join(pluginRoot, "python-scripts", "list_blueprints.py");
@@ -33,7 +42,10 @@ export function registerListBlueprintsTool(server: McpServer): void {
         if (filter) args.filter = filter;
         if (type !== "all") args.type = type;
 
-        const result = await runPythonInUE(project, scriptPath, args);
+        const result = await runPythonInUE(project, scriptPath, args, undefined, {
+          signal: extra.signal,
+          onProgress: progressFromExtra(extra),
+        });
 
         if (!result.success || !result.data) {
           return {

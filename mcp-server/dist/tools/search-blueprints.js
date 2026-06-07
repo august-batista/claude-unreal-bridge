@@ -2,27 +2,33 @@ import { z } from "zod";
 import { join } from "node:path";
 import { detectProject } from "../ue-bridge/project-detector.js";
 import { runPythonInUE } from "../ue-bridge/python-runner.js";
+import { progressFromExtra } from "../mcp/progress.js";
 const pluginRoot = process.env.PLUGIN_ROOT || process.cwd();
 export function registerSearchBlueprintsTool(server) {
-    server.tool("search-blueprints", "Search across all blueprints in a UE project for functions, variables, node types, or comment text.", {
-        projectPath: z
-            .string()
-            .describe("Absolute path to the UE project directory"),
-        query: z
-            .string()
-            .describe("Search term: function name, variable name, node type, or comment text"),
-        scope: z
-            .enum(["all", "functions", "variables", "nodes", "comments"])
-            .default("all")
-            .describe("Scope of the search"),
-    }, async ({ projectPath, query, scope }) => {
+    server.registerTool("search-blueprints", {
+        title: "Search Blueprints",
+        description: "Search across all blueprints in a UE project for functions, variables, node types, or comment text.",
+        inputSchema: {
+            projectPath: z
+                .string()
+                .describe("Absolute path to the UE project directory"),
+            query: z
+                .string()
+                .describe("Search term: function name, variable name, node type, or comment text"),
+            scope: z
+                .enum(["all", "functions", "variables", "nodes", "comments"])
+                .default("all")
+                .describe("Scope of the search"),
+        },
+        annotations: {
+            readOnlyHint: true,
+            openWorldHint: false,
+        },
+    }, async ({ projectPath, query, scope }, extra) => {
         try {
             const project = detectProject(projectPath);
             const scriptPath = join(pluginRoot, "python-scripts", "search_blueprints.py");
-            const result = await runPythonInUE(project, scriptPath, {
-                query,
-                scope,
-            });
+            const result = await runPythonInUE(project, scriptPath, { query, scope }, undefined, { signal: extra.signal, onProgress: progressFromExtra(extra) });
             if (!result.success || !result.data) {
                 return {
                     content: [

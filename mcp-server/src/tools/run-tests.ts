@@ -9,46 +9,61 @@ import {
   parseTestReport,
   formatTestReport,
 } from "../parsers/test-report.js";
+import { progressFromExtra } from "../mcp/progress.js";
+import { testRunStructuredShape } from "../mcp/output-schemas.js";
 
 export function registerRunTestsTool(server: McpServer): void {
-  server.tool(
+  server.registerTool(
     "run-tests",
-    "Run UE Automation tests headlessly and report pass/fail per test. " +
-      "Drives `Automation RunTests <Filter>` and parses the JSON report UE writes to `-ReportExportPath`. " +
-      "Covers both C++ tests (IMPLEMENT_SIMPLE_AUTOMATION_TEST) and Functional Tests placed in maps.",
     {
-      projectPath: z
-        .string()
-        .describe("Absolute path to the UE project directory"),
-      filter: z
-        .string()
-        .default("")
-        .describe(
-          "Test path filter. Examples: \"Sandbox.\" runs every test under Sandbox; \"Sandbox.Sanity.AlwaysPasses\" runs one test; empty string runs all discoverable tests (includes engine tests — usually too many).",
-        ),
-      timeoutMs: z
-        .number()
-        .int()
-        .min(60_000)
-        .max(3_600_000)
-        .default(600_000)
-        .describe(
-          "Timeout in milliseconds. Defaults to 10 minutes. UE startup alone is ~30-60s; budget accordingly.",
-        ),
-      mode: z
-        .enum(["run", "list"])
-        .default("run")
-        .describe(
-          "`run` (default) executes tests and parses results. `list` runs `Automation List` to enumerate available tests without executing them.",
-        ),
-      showAllPasses: z
-        .boolean()
-        .default(false)
-        .describe(
-          "If true, list every passing test in the output. By default, the first 30 are shown to keep responses readable.",
-        ),
+      title: "Run Automation Tests",
+      description:
+        "Run UE Automation tests headlessly and report pass/fail per test. " +
+        "Drives `Automation RunTests <Filter>` and parses the JSON report UE writes to `-ReportExportPath`. " +
+        "Covers both C++ tests (IMPLEMENT_SIMPLE_AUTOMATION_TEST) and Functional Tests placed in maps. " +
+        "Returns structured per-test results; streams progress and can be cancelled.",
+      inputSchema: {
+        projectPath: z
+          .string()
+          .describe("Absolute path to the UE project directory"),
+        filter: z
+          .string()
+          .default("")
+          .describe(
+            "Test path filter. Examples: \"Sandbox.\" runs every test under Sandbox; \"Sandbox.Sanity.AlwaysPasses\" runs one test; empty string runs all discoverable tests (includes engine tests — usually too many).",
+          ),
+        timeoutMs: z
+          .number()
+          .int()
+          .min(60_000)
+          .max(3_600_000)
+          .default(600_000)
+          .describe(
+            "Timeout in milliseconds. Defaults to 10 minutes. UE startup alone is ~30-60s; budget accordingly.",
+          ),
+        mode: z
+          .enum(["run", "list"])
+          .default("run")
+          .describe(
+            "`run` (default) executes tests and parses results. `list` runs `Automation List` to enumerate available tests without executing them.",
+          ),
+        showAllPasses: z
+          .boolean()
+          .default(false)
+          .describe(
+            "If true, list every passing test in the output. By default, the first 30 are shown to keep responses readable.",
+          ),
+      },
+      outputSchema: testRunStructuredShape,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
-    async ({ projectPath, filter, timeoutMs, mode, showAllPasses }) => {
+    async ({ projectPath, filter, timeoutMs, mode, showAllPasses }, extra) => {
+      const onProgress = progressFromExtra(extra);
       try {
         const project = detectProject(projectPath);
 
@@ -77,6 +92,8 @@ export function registerRunTestsTool(server: McpServer): void {
         const run = await runEditor(project, {
           extraArgs,
           timeoutMs,
+          control: { signal: extra.signal, onProgress },
+          progressLabel: mode === "list" ? "Listing tests" : "Running tests",
           onSpawn:
             mode === "run"
               ? (_proc, kill) => {
@@ -87,6 +104,7 @@ export function registerRunTestsTool(server: McpServer): void {
                     if (killed) return;
                     if (existsSync(reportPath)) {
                       killed = true;
+                      onProgress?.("Test report written — finalizing…");
                       // Brief pause for write completion before SIGTERM.
                       setTimeout(() => kill(), 1500);
                     }
@@ -95,6 +113,14 @@ export function registerRunTestsTool(server: McpServer): void {
                 }
               : undefined,
         });
+
+        if (extra.signal?.aborted) {
+          try { rmSync(reportDir, { recursive: true, force: true }); } catch { /* best effort */ }
+          return {
+            isError: true,
+            content: [{ type: "text" as const, text: "Test run cancelled." }],
+          };
+        }
 
         if (mode === "list") {
           // Test enumeration goes to the log, not the JSON report.
@@ -114,6 +140,11 @@ export function registerRunTestsTool(server: McpServer): void {
                 text: `${heading}\n\n${body}\n\n_Editor run took ${(run.durationMs / 1000).toFixed(1)}s._`,
               },
             ],
+            structuredContent: {
+              mode: "list",
+              durationMs: run.durationMs,
+              discoveredTests: listLines,
+            },
           };
         }
 
@@ -122,6 +153,7 @@ export function registerRunTestsTool(server: McpServer): void {
           const tail = (run.stderr || run.stdout).slice(-2000).trim();
           try { rmSync(reportDir, { recursive: true, force: true }); } catch { /* best effort */ }
           return {
+            isError: true,
             content: [
               {
                 type: "text" as const,
@@ -140,11 +172,12 @@ export function registerRunTestsTool(server: McpServer): void {
         let raw: unknown;
         try {
           // UE writes the JSON with a UTF-8 BOM (U+FEFF) — strip it.
-          const content = readFileSync(reportPath, "utf-8").replace(/^\uFEFF/, "");
+          const content = readFileSync(reportPath, "utf-8").replace(/^﻿/, "");
           raw = JSON.parse(content);
         } catch (err) {
           try { rmSync(reportDir, { recursive: true, force: true }); } catch { /* best effort */ }
           return {
+            isError: true,
             content: [
               {
                 type: "text" as const,
@@ -159,6 +192,7 @@ export function registerRunTestsTool(server: McpServer): void {
 
         try { rmSync(reportDir, { recursive: true, force: true }); } catch { /* best effort */ }
 
+        const total = report.succeeded + report.failed + report.notRun;
         return {
           content: [
             {
@@ -166,9 +200,25 @@ export function registerRunTestsTool(server: McpServer): void {
               text: `${formatted}\n\n_Editor run took ${(run.durationMs / 1000).toFixed(1)}s._`,
             },
           ],
+          structuredContent: {
+            mode: "run",
+            passed: report.failed === 0 && total > 0,
+            succeeded: report.succeeded,
+            failed: report.failed,
+            notRun: report.notRun,
+            totalDuration: report.totalDuration,
+            durationMs: run.durationMs,
+            tests: report.tests.map((t) => ({
+              fullTestPath: t.fullTestPath,
+              state: t.state,
+              duration: t.duration,
+              errors: t.errors.map((e) => e.message),
+            })),
+          },
         };
       } catch (err) {
         return {
+          isError: true,
           content: [
             {
               type: "text" as const,

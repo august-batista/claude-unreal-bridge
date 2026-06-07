@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdtempSync } from "node:fs";
-import { join } from "node:path";
+import { join, basename } from "node:path";
 import { tmpdir } from "node:os";
 import { findBestInstallation } from "./engine-locator.js";
+import { linkAbort, startHeartbeat } from "./run-control.js";
 const DEFAULT_TIMEOUT_MS = 180_000; // 3 minutes (UE startup is slow)
 /**
  * Classify the failure mode from UE's stderr output.
@@ -62,7 +63,7 @@ function summariseError(stderr, errorType) {
  * The script receives the output file path as its first argument via
  * a wrapper that sets sys.argv. The script should write JSON to that file.
  */
-export async function runPythonInUE(project, scriptPath, args = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
+export async function runPythonInUE(project, scriptPath, args = {}, timeoutMs = DEFAULT_TIMEOUT_MS, control) {
     const installation = findBestInstallation(project.engineVersion);
     if (!installation) {
         throw new Error(`No UE installation found for version ${project.engineVersion}`);
@@ -126,6 +127,19 @@ with open(script_path, 'r') as f:
         const proc = spawn(editorCmd, spawnArgs, {
             stdio: ["ignore", "pipe", "pipe"],
         });
+        const kill = () => {
+            try {
+                proc.kill("SIGTERM");
+            }
+            catch { /* may already be dead */ }
+            setTimeout(() => { try {
+                proc.kill("SIGKILL");
+            }
+            catch { /* same */ } }, 5000);
+        };
+        const stopHeartbeat = startHeartbeat(control?.onProgress, `Running ${basename(scriptPath)} in editor`);
+        const detachAbort = linkAbort(control?.signal, kill);
+        control?.onProgress?.(`Launching editor to run ${basename(scriptPath)}…`);
         proc.stdout.on("data", (data) => {
             stdout += data.toString();
         });
@@ -134,11 +148,12 @@ with open(script_path, 'r') as f:
         });
         const timer = setTimeout(() => {
             timedOut = true;
-            proc.kill("SIGTERM");
-            setTimeout(() => proc.kill("SIGKILL"), 5000);
+            kill();
         }, timeoutMs);
         proc.on("close", (exitCode) => {
             clearTimeout(timer);
+            stopHeartbeat();
+            detachAbort();
             // Try to read the output file
             let data = null;
             try {
@@ -183,6 +198,8 @@ with open(script_path, 'r') as f:
         });
         proc.on("error", (err) => {
             clearTimeout(timer);
+            stopHeartbeat();
+            detachAbort();
             spawnFailed = true;
             const fullStderr = stderr + `\n[claude-unreal] Failed to spawn: ${err.message}`;
             resolve({

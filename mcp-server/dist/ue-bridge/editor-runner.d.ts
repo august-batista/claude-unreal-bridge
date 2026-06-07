@@ -1,5 +1,6 @@
 import { type ChildProcess } from "node:child_process";
 import type { UEProject } from "../types/ue-project.js";
+import { type RunControl } from "./run-control.js";
 /**
  * Generic launcher for `UnrealEditor-Cmd <Project> [extraArgs...]`.
  *
@@ -33,6 +34,10 @@ export interface EditorRunOptions {
      * up the watcher.
      */
     onSpawn?: (proc: ChildProcess, kill: () => void) => void | (() => void);
+    /** Cancellation + progress reporting. */
+    control?: RunControl;
+    /** Label for the progress heartbeat. Defaults to "Editor running". */
+    progressLabel?: string;
 }
 export interface EditorRunResult {
     success: boolean;

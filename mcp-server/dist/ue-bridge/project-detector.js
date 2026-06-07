@@ -2,10 +2,20 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, basename, dirname } from "node:path";
 import { findBestInstallation } from "./engine-locator.js";
 const projectCache = new Map();
+// The most recently detected project. MCP resources (which carry no
+// projectPath argument) read from this so that, after any tool call, the
+// client can pull the active project's log / context / info as resources.
+let activeProject;
+/** The most recently detected project, or undefined if no tool has run yet. */
+export function getActiveProject() {
+    return activeProject;
+}
 export function detectProject(projectPath) {
     const cached = projectCache.get(projectPath);
-    if (cached)
+    if (cached) {
+        activeProject = cached;
         return cached;
+    }
     // Find .uproject file
     const uprojectFile = findUProjectFile(projectPath);
     if (!uprojectFile) {
@@ -46,6 +56,7 @@ export function detectProject(projectPath) {
         })),
     };
     projectCache.set(projectPath, project);
+    activeProject = project;
     return project;
 }
 function findUProjectFile(searchPath) {
@@ -113,6 +124,7 @@ export function normalizeToAssetPath(input, project) {
 }
 export function clearCache() {
     projectCache.clear();
+    activeProject = undefined;
 }
 /**
  * Return the canonical log path for a project: `<Project>/Saved/Logs/<Project>.log`.

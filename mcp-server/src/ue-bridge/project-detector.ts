@@ -5,9 +5,22 @@ import { findBestInstallation } from "./engine-locator.js";
 
 const projectCache = new Map<string, UEProject>();
 
+// The most recently detected project. MCP resources (which carry no
+// projectPath argument) read from this so that, after any tool call, the
+// client can pull the active project's log / context / info as resources.
+let activeProject: UEProject | undefined;
+
+/** The most recently detected project, or undefined if no tool has run yet. */
+export function getActiveProject(): UEProject | undefined {
+  return activeProject;
+}
+
 export function detectProject(projectPath: string): UEProject {
   const cached = projectCache.get(projectPath);
-  if (cached) return cached;
+  if (cached) {
+    activeProject = cached;
+    return cached;
+  }
 
   // Find .uproject file
   const uprojectFile = findUProjectFile(projectPath);
@@ -58,6 +71,7 @@ export function detectProject(projectPath: string): UEProject {
   };
 
   projectCache.set(projectPath, project);
+  activeProject = project;
   return project;
 }
 
@@ -149,6 +163,7 @@ export function normalizeToAssetPath(
 
 export function clearCache(): void {
   projectCache.clear();
+  activeProject = undefined;
 }
 
 /**

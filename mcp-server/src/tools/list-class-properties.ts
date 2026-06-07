@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { detectProject } from "../ue-bridge/project-detector.js";
 import { runPythonInUE } from "../ue-bridge/python-runner.js";
+import { progressFromExtra } from "../mcp/progress.js";
 
 const pluginRoot = process.env.PLUGIN_ROOT || process.cwd();
 
@@ -58,20 +59,28 @@ function formatResult(data: ListPropertiesResult): string {
 }
 
 export function registerListClassPropertiesTool(server: McpServer): void {
-  server.tool(
+  server.registerTool(
     "list-class-properties",
-    "List all settable properties on a UE class (e.g. CharacterMovementComponent) with their names and default values. Use this to discover what property names to pass to set-blueprint-property.",
     {
-      projectPath: z
-        .string()
-        .describe("Absolute path to the UE project directory"),
-      className: z
-        .string()
-        .describe(
-          "UE C++ class name to inspect, e.g. CharacterMovementComponent, ProjectileMovementComponent, CameraComponent",
-        ),
+      title: "List Class Properties",
+      description:
+        "List all settable properties on a UE class (e.g. CharacterMovementComponent) with their names and default values. Use this to discover what property names to pass to set-blueprint-property.",
+      inputSchema: {
+        projectPath: z
+          .string()
+          .describe("Absolute path to the UE project directory"),
+        className: z
+          .string()
+          .describe(
+            "UE C++ class name to inspect, e.g. CharacterMovementComponent, ProjectileMovementComponent, CameraComponent",
+          ),
+      },
+      annotations: {
+        readOnlyHint: true,
+        openWorldHint: false,
+      },
     },
-    async ({ projectPath, className }) => {
+    async ({ projectPath, className }, extra) => {
       try {
         const project = detectProject(projectPath);
         const scriptPath = join(
@@ -80,9 +89,13 @@ export function registerListClassPropertiesTool(server: McpServer): void {
           "list_class_properties.py",
         );
 
-        const result = await runPythonInUE(project, scriptPath, {
-          class_name: className,
-        });
+        const result = await runPythonInUE(
+          project,
+          scriptPath,
+          { class_name: className },
+          undefined,
+          { signal: extra.signal, onProgress: progressFromExtra(extra) },
+        );
 
         if (!result.success || !result.data) {
           return {

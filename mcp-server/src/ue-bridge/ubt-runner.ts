@@ -7,6 +7,7 @@ import type {
 } from "../types/ue-project.js";
 import { findBestInstallation, HOST_PLATFORM } from "./engine-locator.js";
 import { parseCppBuildOutput } from "../parsers/cpp-build-output.js";
+import { linkAbort, startHeartbeat, type RunControl } from "./run-control.js";
 
 const DEFAULT_TIMEOUT_MS = 900_000; // 15 minutes — clean C++ builds can be slow
 
@@ -21,6 +22,8 @@ export interface BuildOptions {
   timeoutMs?: number;
   /** Extra args to pass to UBT/Build.sh. */
   extraArgs?: string[];
+  /** Cancellation + progress reporting. */
+  control?: RunControl;
 }
 
 /**
@@ -83,6 +86,7 @@ export async function buildCppTarget(
   console.error(`[claude-unreal] UBT args: ${JSON.stringify(args)}`);
 
   const startedAt = Date.now();
+  const control = options.control;
 
   return new Promise<CppBuildResult>((resolve) => {
     let stdout = "";
@@ -93,8 +97,30 @@ export async function buildCppTarget(
       stdio: ["ignore", "pipe", "pipe"],
     });
 
+    const kill = () => {
+      try { proc.kill("SIGTERM"); } catch { /* may already be dead */ }
+      setTimeout(() => { try { proc.kill("SIGKILL"); } catch { /* same */ } }, 5000);
+    };
+    const stopHeartbeat = startHeartbeat(control?.onProgress, `Building ${target}`);
+    const detachAbort = linkAbort(control?.signal, kill);
+    control?.onProgress?.(`Launching UnrealBuildTool: ${target} (${platform} ${configuration})…`);
+
+    // UBT prints `[n/m] Compile Foo.cpp` per translation unit — surface real
+    // build progress, not just elapsed time. Only emit when the step advances.
+    let lastStep = 0;
     proc.stdout.on("data", (data: Buffer) => {
-      stdout += data.toString();
+      const s = data.toString();
+      stdout += s;
+      if (control?.onProgress) {
+        const m = [...s.matchAll(/\[(\d+)\/(\d+)\]/g)].pop();
+        if (m) {
+          const n = Number(m[1]);
+          if (n > lastStep) {
+            lastStep = n;
+            control.onProgress(`Compiling ${m[1]}/${m[2]}…`);
+          }
+        }
+      }
     });
     proc.stderr.on("data", (data: Buffer) => {
       stderr += data.toString();
@@ -102,12 +128,13 @@ export async function buildCppTarget(
 
     const timer = setTimeout(() => {
       timedOut = true;
-      proc.kill("SIGTERM");
-      setTimeout(() => proc.kill("SIGKILL"), 5000);
+      kill();
     }, timeoutMs);
 
     proc.on("close", (exitCode) => {
       clearTimeout(timer);
+      stopHeartbeat();
+      detachAbort();
       const durationMs = Date.now() - startedAt;
 
       const fullOut = stdout + (timedOut ? `\n[claude-unreal] UBT timed out after ${timeoutMs}ms\n` : "");
@@ -126,6 +153,8 @@ export async function buildCppTarget(
 
     proc.on("error", (err) => {
       clearTimeout(timer);
+      stopHeartbeat();
+      detachAbort();
       const durationMs = Date.now() - startedAt;
       resolve({
         success: false,

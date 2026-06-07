@@ -2,6 +2,7 @@ import { z } from "zod";
 import { join } from "node:path";
 import { detectProject } from "../ue-bridge/project-detector.js";
 import { runPythonInUE } from "../ue-bridge/python-runner.js";
+import { progressFromExtra } from "../mcp/progress.js";
 const pluginRoot = process.env.PLUGIN_ROOT || process.cwd();
 function isListPropertiesResult(data) {
     return (typeof data === "object" &&
@@ -34,20 +35,26 @@ function formatResult(data) {
     return lines.join("\n");
 }
 export function registerListClassPropertiesTool(server) {
-    server.tool("list-class-properties", "List all settable properties on a UE class (e.g. CharacterMovementComponent) with their names and default values. Use this to discover what property names to pass to set-blueprint-property.", {
-        projectPath: z
-            .string()
-            .describe("Absolute path to the UE project directory"),
-        className: z
-            .string()
-            .describe("UE C++ class name to inspect, e.g. CharacterMovementComponent, ProjectileMovementComponent, CameraComponent"),
-    }, async ({ projectPath, className }) => {
+    server.registerTool("list-class-properties", {
+        title: "List Class Properties",
+        description: "List all settable properties on a UE class (e.g. CharacterMovementComponent) with their names and default values. Use this to discover what property names to pass to set-blueprint-property.",
+        inputSchema: {
+            projectPath: z
+                .string()
+                .describe("Absolute path to the UE project directory"),
+            className: z
+                .string()
+                .describe("UE C++ class name to inspect, e.g. CharacterMovementComponent, ProjectileMovementComponent, CameraComponent"),
+        },
+        annotations: {
+            readOnlyHint: true,
+            openWorldHint: false,
+        },
+    }, async ({ projectPath, className }, extra) => {
         try {
             const project = detectProject(projectPath);
             const scriptPath = join(pluginRoot, "python-scripts", "list_class_properties.py");
-            const result = await runPythonInUE(project, scriptPath, {
-                class_name: className,
-            });
+            const result = await runPythonInUE(project, scriptPath, { class_name: className }, undefined, { signal: extra.signal, onProgress: progressFromExtra(extra) });
             if (!result.success || !result.data) {
                 return {
                     content: [

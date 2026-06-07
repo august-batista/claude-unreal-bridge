@@ -29,6 +29,7 @@ The plugin has two halves:
 ### Mutate
 - `set-blueprint-property` — Set a single property on a blueprint asset
 - `set-blueprint-properties` — Batch set properties on a blueprint asset
+- `edit-blueprint-graph` — Add / wire / delete **K2 graph nodes** in one editor session, then compile + save. Batch of ordered ops: `addFunctionNode`, `addSelfFunctionNode` (self/parent funcs), `addCustomEvent`, `addVariableGet`, `addVariableSet`, `addBranch`, `addSequence`, `addMacro` (ForLoop/ForEachLoop/WhileLoop/Gate/DoOnce/FlipFlop), `addCast`, `addMemberVariable`, `connect`, `breakPinLink`, `setPinDefault`, `deleteNode`, `moveNode`, `retargetNode` — enough for real logic (variables + branches + loops + casts + math/function calls). **Edits the existing graph in place** (not a rewrite): nodes spawned in the batch are referenced by a local `id`, existing nodes by GUID (from `read-blueprint`), so you can surgically wire/unwire (`connect`/`breakPinLink`), set pin defaults, move, delete, or reconfigure individual nodes (`retargetNode` retargets a function call / cast / variable or renames a custom event). Create a variable with `addMemberVariable` before get/set nodes reference it. Pass `autoLayout: true` to tidy the graph (exec backbone on a pin-aligned rail; data/condition feeders packed into the gap before their consumer; disconnected events parked); `operations` may be empty for a layout-only re-arrange. Returns structured per-op results + node GUIDs + positions. **Requires the `ClaudeUnrealBridge` plugin enabled and its editor target built** in the project (it ships the `UClaudeBPGraphLibrary` C++ wrapping `FGraphNodeCreator` / schema `TryCreateConnection` / `UEdGraph::RemoveNode` / `FKismetEditorUtilities::CompileBlueprint` + `AutoLayoutGraph` — all UE 5.7+, no 5.8 needed). Driver: `python-scripts/edit_blueprint_graph.py`. Regression: `cd mcp-server && npm run test:graph` (gated; needs UE 5.7 + a built `SandboxEditor`, skips otherwise).
 
 ### Build / compile
 - `build-cpp` — UnrealBuildTool wrapper for the editor target. No-op for BP-only projects. Returns clang/MSVC errors with file:line.
@@ -38,6 +39,18 @@ The plugin has two halves:
 - `run-tests` — Drives `Automation RunTests <Filter>` headlessly and parses the JSON report UE writes to `-ReportExportPath`. Pass/fail per test with error events.
 - `run-scenario` — Boots a map (default `-game` mode), then either (a) sends single-shot `-ExecCmds`, or (b) executes a scripted `steps` list (exec, wait, waitForLog, injectAction with hold-per-tick, possess, **playRecording**, quit) that drives the actual Enhanced Input pipeline. The scripted form runs an in-game Python tick handler (`python-scripts/scenario_runner.py`) and needs the `ClaudeUnrealBridge` editor-side plugin's Runtime submodule for `injectAction`/`possess`/`playRecording`. Optional `visible: true` shows the editor window for live debugging; default is offscreen / no focus theft.
 - `read-logs` — Reads `<Project>/Saved/Logs/<Project>.log` (current or previous runs); filters by category, severity, regex.
+
+## MCP protocol features
+
+Beyond plain-text tool output, the server implements several MCP primitives. These work with any MCP client on UE 5.5+ and need no in-engine plugin:
+
+- **Structured output** — `build-cpp`, `compile-blueprints`, `run-tests`, and `read-logs` return machine-readable `structuredContent` (typed diagnostics, per-test results, log entries) next to the human-readable markdown, validated against a declared `outputSchema`. (`run-tests`/`read-logs` use one unified schema across their run/list modes; failure paths set `isError` so the schema isn't enforced on them.)
+- **Progress notifications** — long-running tools (builds, tests, scenarios, blueprint extraction) stream `notifications/progress` when the client supplies a `progressToken`: an elapsed-time heartbeat plus milestones (UBT `[n/m]` compile steps, "test report written", per-section context generation). Silent when no token is sent.
+- **Cancellation** — tools honor `notifications/cancelled` via the request `AbortSignal`; the spawned editor/UBT child is SIGTERM→SIGKILLed and the tool returns an `isError` "cancelled" result instead of running to the timeout.
+- **Tool annotations** — every tool advertises `readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint` (the read/inspect tools are read-only; `set-blueprint-propert*` are destructive; `run-tests`/`run-scenario` are open-world).
+- **Resources** — three pull-able views of the most-recently-used project (the "active project" is set by any tool call): `unreal://project/info` (project metadata JSON), `unreal://project/log` (current log tail), `unreal://project/context` (UNREAL_CONTEXT.md if generated). These are cheap filesystem reads; blueprint bodies and test reports stay as tools because they boot the editor.
+
+The plumbing lives in `mcp-server/src/ue-bridge/run-control.ts` (transport-agnostic cancel/progress), `mcp-server/src/mcp/progress.ts` (MCP `extra` → progress adapter), `mcp-server/src/mcp/output-schemas.ts` (zod output schemas), and `mcp-server/src/mcp/resources.ts`. Hermetic tests: `mcp-server/tests/verify-mcp-primitives.js` and `verify-server-handshake.js`.
 
 ## Recording & playback (Slate-level replay)
 

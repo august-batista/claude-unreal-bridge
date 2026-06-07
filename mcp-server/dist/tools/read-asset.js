@@ -2,13 +2,21 @@ import { z } from "zod";
 import { existsSync, statSync } from "node:fs";
 import { detectProject, normalizeToAssetPath, assetPathToFilePath, } from "../ue-bridge/project-detector.js";
 export function registerReadAssetTool(server) {
-    server.tool("read-asset", "Read basic metadata about any Unreal Engine asset. Returns file path, size, type, and related files (.uexp, .ubulk). For blueprint-specific data, use read-blueprint instead.", {
-        projectPath: z
-            .string()
-            .describe("Absolute path to the UE project directory"),
-        assetPath: z
-            .string()
-            .describe("Asset path or file path to the UE asset"),
+    server.registerTool("read-asset", {
+        title: "Read Asset Metadata",
+        description: "Read basic metadata about any Unreal Engine asset. Returns file path, size, type, and related files (.uexp, .ubulk). For blueprint-specific data, use read-blueprint instead.",
+        inputSchema: {
+            projectPath: z
+                .string()
+                .describe("Absolute path to the UE project directory"),
+            assetPath: z
+                .string()
+                .describe("Asset path or file path to the UE asset"),
+        },
+        annotations: {
+            readOnlyHint: true,
+            openWorldHint: false,
+        },
     }, async ({ projectPath, assetPath }) => {
         try {
             const project = detectProject(projectPath);

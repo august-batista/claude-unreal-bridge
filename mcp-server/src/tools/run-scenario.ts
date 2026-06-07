@@ -15,6 +15,7 @@ import {
   defaultProjectLogPath,
 } from "../ue-bridge/project-detector.js";
 import { runEditor } from "../ue-bridge/editor-runner.js";
+import { progressFromExtra } from "../mcp/progress.js";
 import {
   filterLog,
   formatLogEntries,
@@ -88,12 +89,15 @@ const stepSchema = z.discriminatedUnion("type", [
 ]);
 
 export function registerRunScenarioTool(server: McpServer): void {
-  server.tool(
+  server.registerTool(
     "run-scenario",
-    "Boot a map headlessly and either (a) run a single -ExecCmds and capture logs, or (b) execute a scripted step list that drives the actual player input pipeline via EnhancedInput. " +
-      "Use the step list (`steps` parameter) when you need to test player logic — held buttons, sequenced inputs, log-reactive flows. " +
-      "Use the simple form (`execCmds`) for quick boot-and-cvar checks.",
     {
+      title: "Run Gameplay Scenario",
+      description:
+        "Boot a map headlessly and either (a) run a single -ExecCmds and capture logs, or (b) execute a scripted step list that drives the actual player input pipeline via EnhancedInput. " +
+        "Use the step list (`steps` parameter) when you need to test player logic — held buttons, sequenced inputs, log-reactive flows. " +
+        "Use the simple form (`execCmds`) for quick boot-and-cvar checks.",
+      inputSchema: {
       projectPath: z
         .string()
         .describe("Absolute path to the UE project directory"),
@@ -162,6 +166,12 @@ export function registerRunScenarioTool(server: McpServer): void {
         .describe(
           "Only affects scenarios that need a real RHI (e.g. playRecording). When true, the editor window appears on screen so you can watch the replay — useful for debugging. Default false (offscreen, no focus theft).",
         ),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        openWorldHint: true,
+      },
     },
     async ({
       projectPath,
@@ -175,7 +185,7 @@ export function registerRunScenarioTool(server: McpServer): void {
       pattern,
       maxLogLines,
       visible,
-    }) => {
+    }, extra) => {
       try {
         const project = detectProject(projectPath);
 
@@ -304,11 +314,14 @@ export function registerRunScenarioTool(server: McpServer): void {
         }
         // else: undefined → editor-runner uses its default (with -nullrhi)
 
+        const onProgress = progressFromExtra(extra);
         const run = await runEditor(project, {
           extraArgs: argv,
           timeoutMs,
           env: envExtra,
           headlessFlags,
+          control: { signal: extra.signal, onProgress },
+          progressLabel: "Running scenario",
           // For scripted scenarios, poll for the result JSON. The Python
           // runner writes it when the step list completes; we then SIGTERM
           // because quit_game can't reliably terminate without a world ref
@@ -321,6 +334,7 @@ export function registerRunScenarioTool(server: McpServer): void {
                   if (killed) return;
                   if (existsSync(resultFile)) {
                     killed = true;
+                    onProgress?.("Scenario result written — finalizing…");
                     // Give the runner ~1s to also try its own quit (and
                     // anything mid-flush) before we SIGTERM.
                     setTimeout(() => kill(), 1000);
@@ -330,6 +344,16 @@ export function registerRunScenarioTool(server: McpServer): void {
               }
             : undefined,
         });
+
+        if (extra.signal?.aborted) {
+          if (scenarioDir) {
+            try { rmSync(scenarioDir, { recursive: true, force: true }); } catch { /* best effort */ }
+          }
+          return {
+            isError: true,
+            content: [{ type: "text" as const, text: "Scenario run cancelled." }],
+          };
+        }
 
         const lines: string[] = [];
         const status = run.timedOut

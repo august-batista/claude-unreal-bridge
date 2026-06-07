@@ -5,6 +5,7 @@ import type { UEProject, CompileResult } from "../types/ue-project.js";
 import { findBestInstallation } from "./engine-locator.js";
 import { parseCompileOutput } from "../parsers/compile-output.js";
 import { defaultProjectLogPath } from "./project-detector.js";
+import { linkAbort, startHeartbeat, type RunControl } from "./run-control.js";
 
 const DEFAULT_TIMEOUT_MS = 300_000; // 5 minutes for compilation
 
@@ -23,6 +24,7 @@ export async function runCommandlet(
   commandlet: string,
   extraArgs: string[] = [],
   timeoutMs: number = DEFAULT_TIMEOUT_MS,
+  control?: RunControl,
 ): Promise<CommandletResult> {
   const installation = findBestInstallation(project.engineVersion);
   if (!installation) {
@@ -67,6 +69,14 @@ export async function runCommandlet(
       stdio: ["ignore", "pipe", "pipe"],
     });
 
+    const kill = () => {
+      try { proc.kill("SIGTERM"); } catch { /* may already be dead */ }
+      setTimeout(() => { try { proc.kill("SIGKILL"); } catch { /* same */ } }, 5000);
+    };
+    const stopHeartbeat = startHeartbeat(control?.onProgress, `Running ${commandlet}`);
+    const detachAbort = linkAbort(control?.signal, kill);
+    control?.onProgress?.(`Launching ${commandlet} commandlet…`);
+
     proc.stdout.on("data", (data: Buffer) => {
       stdout += data.toString();
     });
@@ -77,12 +87,13 @@ export async function runCommandlet(
 
     const timer = setTimeout(() => {
       timedOut = true;
-      proc.kill("SIGTERM");
-      setTimeout(() => proc.kill("SIGKILL"), 5000);
+      kill();
     }, timeoutMs);
 
     proc.on("close", (exitCode) => {
       clearTimeout(timer);
+      stopHeartbeat();
+      detachAbort();
 
       if (timedOut) {
         resolve({
@@ -106,6 +117,8 @@ export async function runCommandlet(
 
     proc.on("error", (err) => {
       clearTimeout(timer);
+      stopHeartbeat();
+      detachAbort();
       resolve({
         success: false,
         stdout,
@@ -122,8 +135,15 @@ export async function runCommandlet(
 export async function compileAllBlueprints(
   project: UEProject,
   projectOnly: boolean = true,
+  control?: RunControl,
 ): Promise<CompileResult> {
   const args = projectOnly ? ["-ProjectOnly"] : [];
-  const result = await runCommandlet(project, "CompileAllBlueprints", args);
+  const result = await runCommandlet(
+    project,
+    "CompileAllBlueprints",
+    args,
+    DEFAULT_TIMEOUT_MS,
+    control,
+  );
   return parseCompileOutput(result.stdout, result.stderr, result.exitCode);
 }

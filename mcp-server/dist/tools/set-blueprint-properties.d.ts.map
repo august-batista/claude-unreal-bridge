@@ -1,1 +1,1 @@
-{"version":3,"file":"set-blueprint-properties.d.ts","sourceRoot":"","sources":["../../src/tools/set-blueprint-properties.ts"],"names":[],"mappings":"AAEA,OAAO,KAAK,EAAE,SAAS,EAAE,MAAM,yCAAyC,CAAC;AAiEzE,wBAAgB,kCAAkC,CAAC,MAAM,EAAE,SAAS,GAAG,IAAI,CA6F1E"}
+{"version":3,"file":"set-blueprint-properties.d.ts","sourceRoot":"","sources":["../../src/tools/set-blueprint-properties.ts"],"names":[],"mappings":"AAEA,OAAO,KAAK,EAAE,SAAS,EAAE,MAAM,yCAAyC,CAAC;AAkEzE,wBAAgB,kCAAkC,CAAC,MAAM,EAAE,SAAS,GAAG,IAAI,CA6G1E"}
