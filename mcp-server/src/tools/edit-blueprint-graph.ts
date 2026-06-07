@@ -25,10 +25,24 @@ interface GraphEditResult {
   saved?: boolean | null;
   auto_layout?: boolean | null;
   nodes?: string[];
+  connections?: string[];
   error?: string;
   compile_error?: string;
   save_error?: string;
   auto_layout_error?: string;
+}
+
+/** Parse a "fromGuid|fromPin|toGuid|toPin|kind" edge string into an object. */
+function parseConnection(s: string): {
+  from: string;
+  fromPin: string;
+  to: string;
+  toPin: string;
+  kind: string;
+} | null {
+  const p = String(s).split("|");
+  if (p.length < 5) return null;
+  return { from: p[0], fromPin: p[1], to: p[2], toPin: p[3], kind: p[4] };
 }
 
 // Discriminated union of graph operations. Node references ("from"/"to"/"node")
@@ -278,6 +292,9 @@ export function registerEditBlueprintGraphTool(server: McpServer): void {
             ...(o.error ? { error: o.error } : {}),
           })),
           ...(data.nodes ? { nodes: data.nodes } : {}),
+          connections: (data.connections ?? [])
+            .map(parseConnection)
+            .filter((c): c is NonNullable<typeof c> => c !== null),
         };
 
         return {
@@ -331,6 +348,9 @@ function formatResult(data: GraphEditResult): string {
   }
   if (data.nodes) {
     lines.push(`Nodes now in graph: ${data.nodes.length}`);
+  }
+  if (data.connections) {
+    lines.push(`Connections now in graph: ${data.connections.length}`);
   }
 
   return lines.join("\n");

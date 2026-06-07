@@ -57,6 +57,11 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Claude|BP Graph")
 	static TArray<FString> ListNodeGuids(UBlueprint* Blueprint, const FString& GraphName);
 
+	/** Returns "<fromGuid>|<fromPin>|<toGuid>|<toPin>|<exec|data>" for each output->input link
+	 *  in the graph — the live edge list, keyed the same way connect/breakPinLink address nodes. */
+	UFUNCTION(BlueprintCallable, Category = "Claude|BP Graph")
+	static TArray<FString> ListGraphConnections(UBlueprint* Blueprint, const FString& GraphName);
+
 	// ---- logic node types ----
 
 	/** Spawn a pure Variable Get node for a self/member variable. Output data pin is named after the variable. */

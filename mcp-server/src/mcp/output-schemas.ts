@@ -104,8 +104,20 @@ export const graphEditStructuredShape = {
       error: z.string().optional(),
     }),
   ),
-  /** Post-edit node inventory, each "<guid>|<class>|<title>". */
+  /** Post-edit node inventory, each "<guid>|<class>|<title>|<x,y>". */
   nodes: z.array(z.string()).optional(),
+  /** Post-edit edge list (NodeGuid + pin name on both ends). */
+  connections: z
+    .array(
+      z.object({
+        from: z.string(),
+        fromPin: z.string(),
+        to: z.string(),
+        toPin: z.string(),
+        kind: z.string(),
+      }),
+    )
+    .optional(),
 } as const;
 
 // ---- read-logs → unified read/list structure ----

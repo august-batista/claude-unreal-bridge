@@ -327,6 +327,7 @@ def _make_node(name, cls, props, pins):
 
     node = {
         'id':       name,
+        'nodeGuid': _norm_guid(props.get('NodeGuid', '')),
         'type':     cls,
         'title':    title,
         'pins':     clean_pins,
@@ -618,7 +619,44 @@ def _graph_to_function(name, gdata):
         'isStatic':        False,
         'accessSpecifier': 'public',
         'nodes':           gdata['nodes'],
+        'connections':     _build_connections(gdata['nodes']),
     }
+
+
+def _norm_guid(raw):
+    """Normalise a T3D NodeGuid to FGuid Digits format (32 uppercase hex), matching the
+    ids UClaudeBPGraphLibrary returns, so the read and write sides share one addressing scheme."""
+    return re.sub(r'[^0-9A-Fa-f]', '', raw or '').upper()
+
+
+def _build_connections(nodes):
+    """Resolve each node's pin `connectedTo` refs (NodeName#PinId) into a normalised edge list
+    keyed by NodeGuid + pin name on both ends, emitted once per edge (from output pins).
+    Returns [{'from','fromPin','to','toPin','kind'}] where kind is 'exec' or 'data' — directly
+    usable with edit-blueprint-graph's connect / breakPinLink ops."""
+    name_to_guid = {}
+    pin_name = {}
+    for n in nodes:
+        name_to_guid[n['id']] = n.get('nodeGuid', '')
+        for p in n['pins']:
+            pin_name[(n['id'], p.get('pinId'))] = p['name']
+    edges = []
+    for n in nodes:
+        src_guid = n.get('nodeGuid', '')
+        for p in n['pins']:
+            if p.get('direction') != 'output':
+                continue
+            kind = 'exec' if p.get('type') == 'exec' else 'data'
+            for ref in p.get('connectedTo', []):
+                tgt_name, _, tgt_pid = ref.partition('#')
+                tgt_guid = name_to_guid.get(tgt_name)
+                tgt_pin = pin_name.get((tgt_name, tgt_pid))
+                if tgt_guid and tgt_pin:
+                    edges.append({
+                        'from': src_guid, 'fromPin': p['name'],
+                        'to': tgt_guid, 'toPin': tgt_pin, 'kind': kind,
+                    })
+    return edges
 
 
 # ── Main extraction entry point ───────────────────────────────────────────────
@@ -669,7 +707,11 @@ def extract_blueprint(asset_path):
             continue
 
         if gname in EVENT_GRAPH_NAMES:
-            result['eventGraphs'].append({'name': gname, 'nodes': gdata['nodes']})
+            result['eventGraphs'].append({
+                'name': gname,
+                'nodes': gdata['nodes'],
+                'connections': _build_connections(gdata['nodes']),
+            })
         else:
             result['functions'].append(_graph_to_function(gname, gdata))
 
@@ -697,4 +739,7 @@ def main():
         unreal.log('[claude-unreal] No output_file specified')
 
 
-main()
+# Run when invoked as the -run=pythonscript target (python-runner execs this file with
+# __name__ == "__main__"); skipped when imported (e.g. by the round-trip regression test).
+if __name__ == "__main__":
+    main()

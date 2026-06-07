@@ -430,6 +430,45 @@ TArray<FString> UClaudeBPGraphLibrary::ListNodeGuids(UBlueprint* Blueprint, cons
 	return Out;
 }
 
+TArray<FString> UClaudeBPGraphLibrary::ListGraphConnections(UBlueprint* Blueprint, const FString& GraphName)
+{
+	TArray<FString> Out;
+	UEdGraph* Graph = ResolveGraph(Blueprint, GraphName);
+	if (!Graph)
+	{
+		return Out;
+	}
+	for (UEdGraphNode* Node : Graph->Nodes)
+	{
+		if (!Node)
+		{
+			continue;
+		}
+		const FString FromGuid = Node->NodeGuid.ToString();
+		for (UEdGraphPin* Pin : Node->Pins)
+		{
+			if (!Pin || Pin->Direction != EGPD_Output)
+			{
+				continue;
+			}
+			const bool bExec = (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec);
+			for (UEdGraphPin* Linked : Pin->LinkedTo)
+			{
+				UEdGraphNode* ToNode = Linked ? Linked->GetOwningNode() : nullptr;
+				if (!ToNode)
+				{
+					continue;
+				}
+				Out.Add(FString::Printf(TEXT("%s|%s|%s|%s|%s"),
+					*FromGuid, *Pin->PinName.ToString(),
+					*ToNode->NodeGuid.ToString(), *Linked->PinName.ToString(),
+					bExec ? TEXT("exec") : TEXT("data")));
+			}
+		}
+	}
+	return Out;
+}
+
 FString UClaudeBPGraphLibrary::AddVariableGetNode(UBlueprint* Blueprint, const FString& GraphName, FName VariableName, int32 NodePosX, int32 NodePosY)
 {
 	UEdGraph* Graph = ResolveGraph(Blueprint, GraphName);

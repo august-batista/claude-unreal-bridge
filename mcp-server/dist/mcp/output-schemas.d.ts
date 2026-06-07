@@ -168,8 +168,28 @@ export declare const graphEditStructuredShape: {
         guid?: string | undefined;
         ok?: boolean | undefined;
     }>, "many">;
-    /** Post-edit node inventory, each "<guid>|<class>|<title>". */
+    /** Post-edit node inventory, each "<guid>|<class>|<title>|<x,y>". */
     readonly nodes: z.ZodOptional<z.ZodArray<z.ZodString, "many">>;
+    /** Post-edit edge list (NodeGuid + pin name on both ends). */
+    readonly connections: z.ZodOptional<z.ZodArray<z.ZodObject<{
+        from: z.ZodString;
+        fromPin: z.ZodString;
+        to: z.ZodString;
+        toPin: z.ZodString;
+        kind: z.ZodString;
+    }, "strip", z.ZodTypeAny, {
+        from: string;
+        fromPin: string;
+        to: string;
+        toPin: string;
+        kind: string;
+    }, {
+        from: string;
+        fromPin: string;
+        to: string;
+        toPin: string;
+        kind: string;
+    }>, "many">>;
 };
 export declare const readLogsStructuredShape: {
     readonly mode: z.ZodEnum<["read", "list"]>;

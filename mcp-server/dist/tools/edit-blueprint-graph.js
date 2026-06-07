@@ -5,6 +5,13 @@ import { runPythonInUE } from "../ue-bridge/python-runner.js";
 import { progressFromExtra } from "../mcp/progress.js";
 import { graphEditStructuredShape } from "../mcp/output-schemas.js";
 const pluginRoot = process.env.PLUGIN_ROOT || process.cwd();
+/** Parse a "fromGuid|fromPin|toGuid|toPin|kind" edge string into an object. */
+function parseConnection(s) {
+    const p = String(s).split("|");
+    if (p.length < 5)
+        return null;
+    return { from: p[0], fromPin: p[1], to: p[2], toPin: p[3], kind: p[4] };
+}
 // Discriminated union of graph operations. Node references ("from"/"to"/"node")
 // are either a local `id` assigned by an earlier add op in THIS batch, or an
 // existing node GUID (from read-blueprint). Exec pins are named `then` (output)
@@ -232,6 +239,9 @@ export function registerEditBlueprintGraphTool(server) {
                     ...(o.error ? { error: o.error } : {}),
                 })),
                 ...(data.nodes ? { nodes: data.nodes } : {}),
+                connections: (data.connections ?? [])
+                    .map(parseConnection)
+                    .filter((c) => c !== null),
             };
             return {
                 content: [{ type: "text", text: formatResult(data) }],
@@ -280,6 +290,9 @@ function formatResult(data) {
     }
     if (data.nodes) {
         lines.push(`Nodes now in graph: ${data.nodes.length}`);
+    }
+    if (data.connections) {
+        lines.push(`Connections now in graph: ${data.connections.length}`);
     }
     return lines.join("\n");
 }

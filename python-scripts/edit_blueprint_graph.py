@@ -251,6 +251,11 @@ def main():
     except Exception as e:
         result["nodes_error"] = str(e)
 
+    try:
+        result["connections"] = [str(s) for s in GraphLib.list_graph_connections(bp, graph_name)]
+    except Exception as e:
+        result["connections_error"] = str(e)
+
     result["handles"] = handles
     ops_ok = all(o.get("ok") for o in result["operations"]) if result["operations"] else True
     compile_ok = (result["compiled"] is not False) if do_compile else True

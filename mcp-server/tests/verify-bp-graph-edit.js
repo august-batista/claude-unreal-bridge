@@ -26,6 +26,7 @@ const editorCmd = join(engineRoot, "Engine/Binaries/Mac/UnrealEditor-Cmd");
 const uproject = join(repoRoot, "sandbox-project", "Sandbox.uproject");
 const sandboxDylib = join(repoRoot, "sandbox-project", "Binaries", "Mac", "UnrealEditor-Sandbox.dylib");
 const editScript = join(repoRoot, "python-scripts", "edit_blueprint_graph.py");
+const pyDir = join(repoRoot, "python-scripts");
 
 function skip(msg) {
   console.log(`SKIP verify-bp-graph-edit: ${msg}`);
@@ -88,8 +89,17 @@ builtins._claude_args = {
     "operations": json.dumps(ops), "compile": "true", "auto_layout": "true",
 }
 exec(open(r"${editScript}").read())
-import json as _j
+import sys as _sys, json as _j
+# Read side (T3D, no bridge): import the extractor and collect its event-graph edges.
+_sys.path.insert(0, r"${pyDir}")
+import extract_blueprint as _eb
+_read = _eb.extract_blueprint(AP)
+_read_conns = []
+for _g in _read.get("eventGraphs", []):
+    for _c in _g.get("connections", []):
+        _read_conns.append("%s|%s|%s|%s|%s" % (_c["from"], _c["fromPin"], _c["to"], _c["toPin"], _c["kind"]))
 _r = _j.load(open(r"${reportPath}"))
+_r["read_connections"] = _read_conns
 _h = _r.get("handles", {})
 try:
     _r["checks"] = {"seq_then1_to_pLoop": bool(GL.are_nodes_connected(bp, "", _h.get("seq",""), "then_1", _h.get("pLoop",""), "execute"))}
@@ -153,6 +163,23 @@ check(
   d.checks && d.checks.seq_then1_to_pLoop === false,
   d.checks,
 );
+
+// Round-trip: the write side (bridge ListGraphConnections) and the read side
+// (extract_blueprint T3D) must report the same edges, keyed by NodeGuid + pin name.
+const h = d.handles || {};
+const live = d.connections || [];
+const read = d.read_connections || [];
+const hasEdge = (list, from, fromPin, to, toPin) =>
+  list.some((s) => {
+    const p = String(s).split("|");
+    return p[0] === from && p[1] === fromPin && p[2] === to && p[3] === toPin;
+  });
+check("bridge returned a live edge list", live.length > 0, live.length);
+check("read (T3D) returned an edge list", read.length > 0, read.length);
+check("live edge getC.Counter -> cmp.A", hasEdge(live, h.getC, "Counter", h.cmp, "A"), live);
+check("live edge cmp.ReturnValue -> br.Condition", hasEdge(live, h.cmp, "ReturnValue", h.br, "Condition"), live);
+check("read (T3D) agrees on getC.Counter -> cmp.A", hasEdge(read, h.getC, "Counter", h.cmp, "A"), read);
+check("read (T3D) agrees on cmp.ReturnValue -> br.Condition", hasEdge(read, h.cmp, "ReturnValue", h.br, "Condition"), read);
 
 try { rmSync(work, { recursive: true, force: true }); } catch {}
 

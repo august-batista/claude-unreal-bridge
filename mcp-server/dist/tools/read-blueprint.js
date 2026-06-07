@@ -54,6 +54,11 @@ export function registerReadBlueprintTool(server) {
             const markdown = formatBlueprintAsMarkdown(result.data, detail);
             return {
                 content: [{ type: "text", text: markdown }],
+                // Full machine-readable graph: per-node nodeGuid + a `connections` edge list
+                // (NodeGuid + pin name on both ends) on each event graph / function — directly
+                // usable with edit-blueprint-graph's connect / breakPinLink. No strict outputSchema:
+                // real blueprints vary too much in shape to validate without risking rejection.
+                structuredContent: result.data,
             };
         }
         catch (err) {
