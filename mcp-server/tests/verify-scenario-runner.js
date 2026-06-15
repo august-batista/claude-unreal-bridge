@@ -9,12 +9,14 @@
  */
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, statSync } from "node:fs";
 import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { detectProject, defaultProjectLogPath } from "../dist/ue-bridge/project-detector.js";
 import { runEditor } from "../dist/ue-bridge/editor-runner.js";
 
-const SANDBOX = "/Users/august/Documents/claude-unreal/sandbox-project";
-const PLUGIN_ROOT = "/Users/august/Documents/claude-unreal";
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const PLUGIN_ROOT = join(__dirname, "..", "..");
+const SANDBOX = join(PLUGIN_ROOT, "sandbox-project");
 
 const project = detectProject(SANDBOX);
 const logPath = defaultProjectLogPath(project);

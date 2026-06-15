@@ -5,14 +5,16 @@
  * succeeded). UE startup ~30-60s; tests themselves are tiny.
  */
 import { mkdtempSync, readFileSync, existsSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { detectProject } from "../dist/ue-bridge/project-detector.js";
 import { runEditor } from "../dist/ue-bridge/editor-runner.js";
 import { parseTestReport, formatTestReport } from "../dist/parsers/test-report.js";
 import { filterLog, formatLogEntries } from "../dist/parsers/log-output.js";
 
-const SANDBOX = "/Users/august/Documents/claude-unreal/sandbox-project";
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const SANDBOX = join(__dirname, "..", "..", "sandbox-project");
 const project = detectProject(SANDBOX);
 
 console.log(`\n# run-tests against Sandbox.Sanity (positive only — should pass)`);

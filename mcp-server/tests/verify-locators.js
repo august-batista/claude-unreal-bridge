@@ -4,10 +4,13 @@
  * sandbox project + installed UE_5.7. Cheap; no build/launch.
  */
 
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { findUEInstallations, findBestInstallation, HOST_PLATFORM } from "../dist/ue-bridge/engine-locator.js";
 import { detectProject } from "../dist/ue-bridge/project-detector.js";
 
-const SANDBOX = "/Users/august/Documents/claude-unreal/sandbox-project";
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const SANDBOX = join(__dirname, "..", "..", "sandbox-project");
 
 let pass = 0, fail = 0;
 function check(label, cond, detail) {

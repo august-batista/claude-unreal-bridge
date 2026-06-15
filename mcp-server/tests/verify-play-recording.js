@@ -27,12 +27,14 @@
  */
 import { execSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { detectProject, defaultProjectLogPath } from "../dist/ue-bridge/project-detector.js";
 import { runEditor } from "../dist/ue-bridge/editor-runner.js";
 
-const PLUGIN_ROOT = "/Users/august/Documents/claude-unreal";
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const PLUGIN_ROOT = join(__dirname, "..", "..");
 
 const PROJECT = process.env.CLAUDE_TEST_PROJECT;
 const RECORDING = process.env.CLAUDE_TEST_RECORDING;
@@ -40,7 +42,7 @@ const RECORDING = process.env.CLAUDE_TEST_RECORDING;
 if (!PROJECT || !RECORDING) {
   console.log("SKIP: verify-play-recording requires CLAUDE_TEST_PROJECT + CLAUDE_TEST_RECORDING.");
   console.log("Example:");
-  console.log("  CLAUDE_TEST_PROJECT=/Users/august/Documents/Bearships/Project/Bearships \\");
+  console.log("  CLAUDE_TEST_PROJECT=/path/to/YourProject \\");
   console.log("  CLAUDE_TEST_RECORDING=fishtest3 \\");
   console.log("  CLAUDE_TEST_MAP=/Game/Bearships/Modules/Game/Game \\");
   console.log("  node mcp-server/tests/verify-play-recording.js");

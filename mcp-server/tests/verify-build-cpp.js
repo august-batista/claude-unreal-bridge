@@ -3,11 +3,14 @@
  * End-to-end test: run buildCppTarget against the sandbox project.
  * Slow (~3-10 min on a clean build). Prints the parsed result.
  */
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { detectProject } from "../dist/ue-bridge/project-detector.js";
 import { buildCppTarget } from "../dist/ue-bridge/ubt-runner.js";
 import { formatCppBuildResult } from "../dist/parsers/cpp-build-output.js";
 
-const SANDBOX = "/Users/august/Documents/claude-unreal/sandbox-project";
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const SANDBOX = join(__dirname, "..", "..", "sandbox-project");
 
 const project = detectProject(SANDBOX);
 console.log(`Building ${project.projectName} editor target via UBT...`);
