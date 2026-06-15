@@ -287,35 +287,55 @@ export function registerRunScenarioTool(server) {
                 };
             }
             const lines = [];
+            // Parse the scripted-scenario result up front — for scripted runs it,
+            // not the editor exit code, is the source of truth. playRecording (and
+            // any scripted run) ends by SIGTERM-killing the editor once the result
+            // JSON lands, so `run.exitCode` is non-zero by design even on full
+            // success; keying status off it would mislabel every scripted run
+            // "FAILED". Fall back to the exit code only for non-scripted runs.
+            let scenarioResult;
+            let scenarioParseError;
+            if (scenarioResultPath && existsSync(scenarioResultPath)) {
+                try {
+                    scenarioResult = JSON.parse(readFileSync(scenarioResultPath, "utf-8").replace(/^﻿/, ""));
+                }
+                catch (err) {
+                    scenarioParseError = err instanceof Error ? err.message : String(err);
+                }
+            }
+            const scenarioOk = scenarioResult !== undefined &&
+                !scenarioResult.earlyExit &&
+                scenarioResult.steps.every((r) => r.outcome === "ok" || r.outcome === "matched");
             const status = run.timedOut
                 ? "TIMED OUT"
-                : run.exitCode === 0
-                    ? "OK"
-                    : "FAILED";
+                : scenarioResult !== undefined
+                    ? scenarioOk
+                        ? "OK"
+                        : "FAILED"
+                    : run.exitCode === 0
+                        ? "OK"
+                        : "FAILED";
             lines.push(`## Scenario: ${status} — \`${mapPath}\` (${mode}${steps ? `, ${steps.length} step(s)` : ""})`);
             lines.push(`Editor exit: ${run.exitCode ?? "killed"}, duration: ${(run.durationMs / 1000).toFixed(1)}s.`);
             // If we ran a scripted scenario, fold the step trace in.
-            if (scenarioResultPath && existsSync(scenarioResultPath)) {
-                try {
-                    const result = JSON.parse(readFileSync(scenarioResultPath, "utf-8").replace(/^﻿/, ""));
-                    lines.push("", "### Step trace", "");
-                    for (const r of result.steps) {
-                        const tag = r.outcome === "ok" || r.outcome === "matched"
-                            ? "✓"
-                            : r.outcome === "timedOut"
-                                ? "⏱"
-                                : "✗";
-                        lines.push(`${tag} **${r.index}. ${r.type}** — ${r.outcome} (${r.durationSec.toFixed(2)}s game time)` +
-                            (r.detail ? ` — _${r.detail}_` : ""));
-                    }
-                    if (result.earlyExit) {
-                        lines.push("", `_Early exit: ${result.earlyExit}_`);
-                    }
-                    lines.push("", `Final game time: ${result.finalGameSec.toFixed(2)}s.`);
+            if (scenarioResult !== undefined) {
+                lines.push("", "### Step trace", "");
+                for (const r of scenarioResult.steps) {
+                    const tag = r.outcome === "ok" || r.outcome === "matched"
+                        ? "✓"
+                        : r.outcome === "timedOut"
+                            ? "⏱"
+                            : "✗";
+                    lines.push(`${tag} **${r.index}. ${r.type}** — ${r.outcome} (${r.durationSec.toFixed(2)}s game time)` +
+                        (r.detail ? ` — _${r.detail}_` : ""));
                 }
-                catch (err) {
-                    lines.push("", `_Failed to parse scenario result JSON: ${err instanceof Error ? err.message : String(err)}_`);
+                if (scenarioResult.earlyExit) {
+                    lines.push("", `_Early exit: ${scenarioResult.earlyExit}_`);
                 }
+                lines.push("", `Final game time: ${scenarioResult.finalGameSec.toFixed(2)}s.`);
+            }
+            else if (scenarioParseError) {
+                lines.push("", `_Failed to parse scenario result JSON: ${scenarioParseError}_`);
             }
             else if (steps && steps.length > 0) {
                 lines.push("", "_Scenario result JSON missing — the runner didn't reach completion. Check the log for `[ClaudeScenario]` lines._");

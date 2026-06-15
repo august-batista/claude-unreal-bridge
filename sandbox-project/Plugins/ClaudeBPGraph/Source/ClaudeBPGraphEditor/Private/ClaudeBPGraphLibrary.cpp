@@ -19,6 +19,12 @@
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "UObject/UObjectGlobals.h"
+#include "WidgetBlueprint.h"
+#include "Blueprint/WidgetTree.h"
+#include "Components/Widget.h"
+#include "Components/PanelWidget.h"
+#include "Components/PanelSlot.h"
+#include "Components/CanvasPanelSlot.h"
 
 namespace
 {
@@ -917,4 +923,121 @@ bool UClaudeBPGraphLibrary::AutoLayoutGraph(UBlueprint* Blueprint, const FString
 
 	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
 	return true;
+}
+
+// ---- UMG widget tree (Widget Blueprints) ----
+// Cribbed from UE 5.8's UMGToolSet::AddWidget (WidgetTree->ConstructWidget + OnVariableAdded +
+// RootWidget / panel AddChild) — all plain UMG/UMGEditor C++ present in 5.7, no engine upgrade.
+
+FString UClaudeBPGraphLibrary::AddWidgetToTree(UWidgetBlueprint* WidgetBlueprint, UClass* WidgetClass, FName WidgetName, FName ParentName, int32 ChildIndex)
+{
+	if (!WidgetBlueprint || !WidgetClass || WidgetName.IsNone())
+	{
+		return FString();
+	}
+	if (WidgetClass->HasAnyClassFlags(CLASS_Abstract) || !WidgetClass->IsChildOf(UWidget::StaticClass()))
+	{
+		return FString();
+	}
+	UWidgetTree* Tree = WidgetBlueprint->WidgetTree;
+	if (!Tree)
+	{
+		return FString();
+	}
+	if (Tree->FindWidget(WidgetName))
+	{
+		return FString();   // name already in use
+	}
+
+	WidgetBlueprint->Modify();
+	UWidget* NewWidget = Tree->ConstructWidget<UWidget>(WidgetClass, WidgetName);
+	if (!NewWidget)
+	{
+		return FString();
+	}
+	// Surface the widget as a blueprint variable so it's addressable from graphs.
+	if (!WidgetBlueprint->WidgetVariableNameToGuidMap.Contains(NewWidget->GetFName()))
+	{
+		WidgetBlueprint->OnVariableAdded(NewWidget->GetFName());
+	}
+
+	UPanelWidget* TargetPanel = nullptr;
+	if (ParentName.IsNone())
+	{
+		// No parent named: become the root, or (if a root exists) attach to the root panel.
+		if (!Tree->RootWidget)
+		{
+			Tree->RootWidget = NewWidget;
+			WidgetBlueprint->MarkPackageDirty();
+			FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(WidgetBlueprint);
+			return NewWidget->GetName();
+		}
+		TargetPanel = Cast<UPanelWidget>(Tree->RootWidget);
+	}
+	else
+	{
+		TargetPanel = Cast<UPanelWidget>(Tree->FindWidget(ParentName));
+	}
+	if (!TargetPanel)
+	{
+		return FString();   // parent missing or not a panel widget
+	}
+
+	UPanelSlot* Slot = (ChildIndex >= 0)
+		? TargetPanel->InsertChildAt(ChildIndex, NewWidget)
+		: TargetPanel->AddChild(NewWidget);
+	if (!Slot)
+	{
+		return FString();   // panel rejected the child (e.g. a content widget already has one)
+	}
+
+	WidgetBlueprint->MarkPackageDirty();
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(WidgetBlueprint);
+	return NewWidget->GetName();
+}
+
+bool UClaudeBPGraphLibrary::SetCanvasSlotLayout(UWidgetBlueprint* WidgetBlueprint, FName WidgetName, float PosX, float PosY, float SizeX, float SizeY, float AlignmentX, float AlignmentY, bool bAutoSize)
+{
+	if (!WidgetBlueprint || !WidgetBlueprint->WidgetTree)
+	{
+		return false;
+	}
+	UWidget* W = WidgetBlueprint->WidgetTree->FindWidget(WidgetName);
+	if (!W)
+	{
+		return false;
+	}
+	UCanvasPanelSlot* Slot = Cast<UCanvasPanelSlot>(W->Slot);
+	if (!Slot)
+	{
+		return false;   // not parented under a CanvasPanel
+	}
+	Slot->SetPosition(FVector2D(PosX, PosY));
+	Slot->SetAlignment(FVector2D(AlignmentX, AlignmentY));
+	Slot->SetAutoSize(bAutoSize);
+	if (!bAutoSize)
+	{
+		Slot->SetSize(FVector2D(SizeX, SizeY));
+	}
+	WidgetBlueprint->MarkPackageDirty();
+	return true;
+}
+
+TArray<FString> UClaudeBPGraphLibrary::ListWidgets(UWidgetBlueprint* WidgetBlueprint)
+{
+	TArray<FString> Out;
+	if (!WidgetBlueprint || !WidgetBlueprint->WidgetTree)
+	{
+		return Out;
+	}
+	WidgetBlueprint->WidgetTree->ForEachWidget([&Out](UWidget* W)
+	{
+		if (!W)
+		{
+			return;
+		}
+		const FString ParentName = W->GetParent() ? W->GetParent()->GetName() : FString();
+		Out.Add(FString::Printf(TEXT("%s|%s|%s"), *W->GetName(), *W->GetClass()->GetName(), *ParentName));
+	});
+	return Out;
 }

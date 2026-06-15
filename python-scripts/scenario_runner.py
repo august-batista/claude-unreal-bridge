@@ -676,7 +676,10 @@ def _handle_exec(step):
 
 
 def _handle_wait(step):
-    elapsed = _game_seconds() - state["sub"]["started_at_game_sec"]
+    # Wall-clock, NOT game time: the runner ticks on Slate post-tick, which
+    # keeps firing while the game is paused (e.g. the inventory menu). Game-
+    # time waits would hang forever there.
+    elapsed = time.time() - state["sub"]["started_at_wall"]
     if elapsed >= float(step.get("seconds", 0)):
         return True, "ok", None
     return False, "ok", None
@@ -705,7 +708,7 @@ def _handle_wait_for_log(step):
         except re.error as e:
             return True, "error", "bad regex: %s" % e
 
-    elapsed = _game_seconds() - state["sub"]["started_at_game_sec"]
+    elapsed = time.time() - state["sub"]["started_at_wall"]
     if elapsed >= timeout:
         return True, "timedOut", "pattern=%s timeout=%.1fs" % (pattern_str, timeout)
     return False, "ok", None
@@ -765,6 +768,56 @@ def _handle_possess(step):
         return True, "ok", "possessed %s" % target.get_name()
     except Exception as e:
         return True, "error", "possess raised: %s" % e
+
+
+def _diag_pawn_state(tag):
+    """Best-effort snapshot of the player pawn's held item and nearby
+    pickups, logged under [ClaudeScenario]. Lets a playRecording test
+    confirm whether a gameplay outcome (e.g. grabbing an item) actually
+    followed through, independent of game-side logging. Never raises."""
+    try:
+        pawn = _player_pawn()
+        if not pawn:
+            _log("pawnState[%s]: no pawn yet" % tag)
+            return
+        loc = pawn.get_actor_location()
+        _log("pawnState[%s]: pawn=%s at (%.0f,%.0f,%.0f)" % (
+            tag, pawn.get_name(), loc.x, loc.y, loc.z))
+        # Held/equipped item — property names vary across the BP→C++
+        # migration, so probe several and report whichever resolves.
+        for prop in ("CurrentEquippedItem", "GrabbedItem", "HeldItem", "EquippedItem"):
+            try:
+                v = pawn.get_editor_property(prop)
+            except Exception:
+                continue
+            _log("pawnState[%s]: %s -> %s" % (
+                tag, prop, v.get_name() if v else "None"))
+        # Nearby AInventoryItem actors: distance + attach parent. A grabbed
+        # item attaches to the bear, so its attach-parent flips to the pawn
+        # and its distance collapses to a hand offset — a game-agnostic
+        # "did the grab land" signal.
+        try:
+            w = _world()
+            cls = unreal.load_class(None, "/Script/BearGame.InventoryItem")
+            if cls and w:
+                rows = []
+                for a in unreal.GameplayStatics.get_all_actors_of_class(w, cls):
+                    al = a.get_actor_location()
+                    d = ((al.x - loc.x) ** 2 + (al.y - loc.y) ** 2 + (al.z - loc.z) ** 2) ** 0.5
+                    try:
+                        par = a.get_attach_parent_actor()
+                        par = par.get_name() if par else "-"
+                    except Exception:
+                        par = "?"
+                    rows.append((d, a.get_name(), par))
+                rows.sort()
+                for d, name, par in rows[:4]:
+                    _log("pawnState[%s]: item %s dist=%.0fcm attachedTo=%s" % (
+                        tag, name, d, par))
+        except Exception as e:
+            _log("pawnState[%s]: item scan failed: %s" % (tag, e))
+    except Exception as e:
+        _log("pawnState[%s]: raised %s" % (tag, e))
 
 
 def _handle_play_recording(step):
@@ -867,9 +920,42 @@ def _handle_play_recording(step):
             unreal.SystemLibrary.execute_console_command(_world(), "Rec.SuppressCursor 1")
         except Exception as e:
             _log("playRecording: Rec.SuppressCursor 1 raised: %s (continuing)" % e)
+        # seekPawn: teleport the pawn to the recording's first pawn-location
+        # sample before replay starts. The recorded inputs (walk to a spot,
+        # press Interact) are authored relative to the capture-time pawn
+        # position; if the map's PlayerStart drops the pawn somewhere else,
+        # position-dependent outcomes (grabbing a world item, casting at a
+        # lake) play out against the wrong geometry and silently miss. When
+        # the spawn already matches the recording (PlayerStart == capture
+        # spot) this is a ~0cm no-op. Best-effort; never aborts the replay.
+        if step.get("seekPawn", True):
+            try:
+                import json as _seek_json
+                with open(path, "r") as _sf:
+                    _rec = _seek_json.load(_sf)
+                _start_loc = None
+                for _ev in _rec.get("events", []):
+                    _pl = _ev.get("pawnLoc")
+                    if _pl and len(_pl) == 3:
+                        _start_loc = _pl
+                        break
+                _pawn = _player_pawn()
+                if _start_loc and _pawn:
+                    _dest = unreal.Vector(float(_start_loc[0]), float(_start_loc[1]), float(_start_loc[2]))
+                    _cur = _pawn.get_actor_location()
+                    _pawn.set_actor_location(_dest, False, True)
+                    _log("seekPawn: pawn (%.0f,%.0f,%.0f) -> recording start (%.0f,%.0f,%.0f)" % (
+                        _cur.x, _cur.y, _cur.z, _dest.x, _dest.y, _dest.z))
+                elif not _start_loc:
+                    _log("seekPawn: recording has no pawnLoc sample (skipping teleport)")
+                else:
+                    _log("seekPawn: no pawn yet to teleport (skipping)")
+            except Exception as e:
+                _log("seekPawn: raised %s (continuing without seek)" % e)
         # Kick off via console command — same path the user tested
         # interactively. Pass just the base name (recorder resolves to
         # standard dir) OR the full absolute path (recorder accepts both).
+        _diag_pawn_state("preGrab")
         try:
             unreal.SystemLibrary.execute_console_command(_world(), "Rec.Play %s" % path)
             sub["kicked_off"] = True
@@ -921,9 +1007,373 @@ def _handle_play_recording(step):
         dx, dy, dz = p.x - pre[0], p.y - pre[1], p.z - pre[2]
         dist = (dx * dx + dy * dy + dz * dz) ** 0.5
         motion = " | bear moved %.1f cm" % dist
+    _diag_pawn_state("postPlayback")
     bound = sub.get("bound_count")
     binds = " | bound %d IMC(s)" % bound if bound is not None else ""
     return True, "ok", "Rec.Play complete%s%s" % (motion, binds)
+
+
+def _resolve_target(spec):
+    """Resolve a step 'target' string to an actor.
+
+    'player'      -> the player pawn
+    'controller'  -> the player controller
+    'tag:Foo'     -> first actor tagged Foo
+    '/Game/...'   -> first actor of that class (LoadClass'd on demand)
+    """
+    if not spec:
+        return None, "empty target"
+    if spec == "player":
+        p = _player_pawn()
+        return p, None if p else "no player pawn"
+    if spec == "controller":
+        pc = _player_controller()
+        return pc, None if pc else "no player controller"
+    world = _world()
+    if not world:
+        return None, "no world"
+    if spec.startswith("tag:"):
+        for a in unreal.GameplayStatics.get_all_actors_with_tag(
+                world, unreal.Name(spec[4:])):
+            return a, None
+        return None, "no actor with tag %r" % spec[4:]
+    if spec.startswith("name:"):
+        wanted = spec[5:]
+        for a in unreal.GameplayStatics.get_all_actors_of_class(world, unreal.Actor):
+            if a.get_name() == wanted:
+                return a, None
+        return None, "no actor named %r" % wanted
+    cls = unreal.load_class(None, spec)
+    if not cls:
+        return None, "could not load class %r" % spec
+    a = unreal.GameplayStatics.get_actor_of_class(world, cls)
+    return (a, None) if a else (None, "no actor of class %r in world" % spec)
+
+
+def _handle_call_event(step):
+    target, err = _resolve_target(step.get("target", ""))
+    if err:
+        return True, "error", err
+    args = tuple(step.get("args") or [])
+    name = step.get("event", "")
+    try:
+        result = target.call_method(name, args)
+    except Exception as e:
+        return True, "error", "call_method(%s) raised: %s" % (name, e)
+    detail = "%s.%s(%s)" % (target.get_name(), name,
+                            ", ".join(repr(a) for a in args))
+    if result is not None:
+        detail += " -> %s" % (result,)
+    return True, "ok", detail
+
+
+def _handle_spawn_actor(step):
+    world = _world()
+    if not world:
+        return True, "error", "no world"
+    loc = step.get("location")
+    if loc:
+        base = unreal.Vector(loc[0], loc[1], loc[2])
+    else:
+        pawn = _player_pawn()
+        if not pawn:
+            return True, "error", "no player pawn for relative spawn"
+        base = pawn.get_actor_location()
+    off = step.get("offset") or [0, 0, 0]
+    base = unreal.Vector(base.x + off[0], base.y + off[1], base.z + off[2])
+    try:
+        # GameplayStatics' spawn entry points aren't exposed to Python in
+        # -game mode; the bridge runtime library provides one.
+        actor = unreal.ClaudeRuntimeLibrary.spawn_actor_by_path(
+            step.get("actorClass", ""), base, unreal.Rotator(0, 0, 0))
+        if actor is None:
+            return True, "error", "SpawnActorByPath returned None (bad class path or no world)"
+    except Exception as e:
+        return True, "error", "spawn raised: %s" % e
+    return True, "ok", "spawned %s at (%.0f, %.0f, %.0f)" % (
+        actor.get_name(), base.x, base.y, base.z)
+
+
+def _handle_teleport_player(step):
+    pawn = _player_pawn()
+    if not pawn:
+        return True, "error", "no player pawn"
+    loc = step.get("location")
+    if loc:
+        base = unreal.Vector(loc[0], loc[1], loc[2])
+    elif step.get("toActorClass"):
+        target, err = _resolve_target(step["toActorClass"])
+        if err:
+            return True, "error", err
+        base = target.get_actor_location()
+    else:
+        return True, "error", "need location or toActorClass"
+    off = step.get("offset") or [0, 0, 0]
+    base = unreal.Vector(base.x + off[0], base.y + off[1], base.z + off[2])
+    try:
+        pawn.set_actor_location(base, False, True)
+    except Exception as e:
+        return True, "error", "set_actor_location raised: %s" % e
+    return True, "ok", "player at (%.0f, %.0f, %.0f)" % (base.x, base.y, base.z)
+
+
+def _handle_query_property(step):
+    target, err = _resolve_target(step.get("target", ""))
+    if step.get("expectMissing"):
+        # Inverted assertion: PASS when the target does NOT resolve
+        # (e.g. "this actor should have been destroyed").
+        if err:
+            return True, "ok", "confirmed missing: %s" % err
+        return True, "mismatch", "%s still exists (expected missing)" % target.get_name()
+    if err:
+        return True, "error", err
+    if step.get("component"):
+        comp = _find_component(target, step["component"])
+        if not comp:
+            return True, "error", "no component %r on %s" % (step["component"], target.get_name())
+        target = comp
+    prop = step.get("property", "")
+    if "." in prop:
+        lib = getattr(unreal, "ClaudeRuntimeLibrary", None)
+        if lib is None or not hasattr(lib, "get_field_by_path"):
+            return True, "error", "dot-path query needs ClaudeRuntimeLibrary.GetFieldByPath (rebuild bridge)"
+        sval = str(lib.get_field_by_path(target, prop))
+        if sval == "":
+            return True, "error", "path %r did not resolve on %s" % (prop, target.get_name())
+    else:
+        try:
+            value = target.get_editor_property(prop)
+        except Exception as e:
+            return True, "error", "get_editor_property(%s) raised: %s" % (prop, e)
+        sval = str(value)
+    detail = "%s.%s = %s" % (target.get_name(), prop, sval)
+    expect = step.get("expect")
+    if expect is not None and expect not in sval:
+        return True, "mismatch", detail + " (expected to contain %r)" % expect
+    return True, "ok", detail
+
+
+
+def _find_component(actor, comp_name):
+    """Find a SceneComponent on `actor` by exact name."""
+    try:
+        for c in actor.get_components_by_class(unreal.SceneComponent):
+            if c.get_name() == comp_name:
+                return c
+    except Exception:
+        pass
+    return None
+
+
+def _endpoint_screen_pos(spec):
+    """Resolve a {target, component?} endpoint to (screen_pos, err)."""
+    target, err = _resolve_target(spec.get("target", ""))
+    if err:
+        return None, err
+    if spec.get("component"):
+        comp = _find_component(target, spec["component"])
+        if not comp:
+            return None, "no component %r on %s" % (spec["component"], target.get_name())
+        world = comp.get_world_location()
+    else:
+        world = target.get_actor_location()
+    pc = _player_controller()
+    if not pc:
+        return None, "no player controller"
+    try:
+        ret = pc.project_world_location_to_screen(world, False)
+    except Exception as e:
+        return None, "project_world_location_to_screen raised: %s" % e
+    # Returns (bool, Vector2D) or Vector2D depending on binding version.
+    if isinstance(ret, tuple):
+        ok, screen = ret[0], ret[1]
+        if not ok:
+            return None, "projection failed (behind camera?)"
+    else:
+        screen = ret
+    return (float(screen.x), float(screen.y)), None
+
+
+def _handle_drag_mouse(step):
+    """Synthetic Slate mouse drag from one actor/component to another.
+
+    Phases per tick: resolve+hover -> press -> lerp move -> release -> settle.
+    Endpoints are re-projected once at start (the menu is paused; nothing moves).
+    """
+    sub = state["sub"]
+    lib = getattr(unreal, "ClaudeRuntimeLibrary", None)
+    if lib is None or not hasattr(lib, "inject_mouse_move"):
+        return True, "error", "ClaudeRuntimeLibrary.inject_mouse_move missing (rebuild bridge)"
+
+    if "drag" not in sub:
+        start, err = _endpoint_screen_pos(step.get("from", {}))
+        if err:
+            return True, "error", "from: " + err
+        end, err = _endpoint_screen_pos(step.get("to", {}))
+        if err:
+            return True, "error", "to: " + err
+        ticks = max(int(float(step.get("durationSec", 0.6)) * 60), 10)
+        sub["drag"] = {"start": start, "end": end, "ticks": ticks, "i": 0,
+                       "phase": "hover", "hover_ticks": 0, "settle": 0}
+        _log("dragMouse: %s -> %s over %d ticks" % (start, end, ticks))
+
+    d = sub["drag"]
+    sx, sy = d["start"]
+    ex, ey = d["end"]
+
+    if d["phase"] == "hover":
+        lib.inject_mouse_move(sx, sy)
+        d["hover_ticks"] += 1
+        if d["hover_ticks"] >= 3:
+            d["phase"] = "press"
+        return False, "ok", None
+    if d["phase"] == "press":
+        lib.inject_mouse_button(sx, sy, True)
+        d["phase"] = "move"
+        return False, "ok", None
+    if d["phase"] == "move":
+        d["i"] += 1
+        t = min(d["i"] / float(d["ticks"]), 1.0)
+        x = sx + (ex - sx) * t
+        y = sy + (ey - sy) * t
+        lib.inject_mouse_move(x, y)
+        if t >= 1.0:
+            d["phase"] = "release"
+        return False, "ok", None
+    if d["phase"] == "release":
+        lib.inject_mouse_button(ex, ey, False)
+        d["phase"] = "settle"
+        return False, "ok", None
+    d["settle"] += 1
+    if d["settle"] >= 10:
+        return True, "ok", "dragged (%.0f,%.0f) -> (%.0f,%.0f)" % (sx, sy, ex, ey)
+    return False, "ok", None
+
+
+def _handle_mouse_press(step):
+    """Hover an actor/component for 3 ticks, then press LMB there and KEEP IT
+    HELD. Pairs with mouseMoveTo / mouseRelease so a scenario can observe
+    (screenshot, pyEval) MID-DRAG — dragMouse is atomic and can't."""
+    sub = state["sub"]
+    lib = getattr(unreal, "ClaudeRuntimeLibrary", None)
+    if lib is None or not hasattr(lib, "inject_mouse_move"):
+        return True, "error", "ClaudeRuntimeLibrary.inject_mouse_move missing (rebuild bridge)"
+    if "pos" not in sub:
+        pos, err = _endpoint_screen_pos({"target": step.get("target", ""),
+                                         "component": step.get("component")})
+        if err:
+            return True, "error", err
+        sub["pos"] = pos
+        sub["ticks"] = 0
+    x, y = sub["pos"]
+    sub["ticks"] += 1
+    if sub["ticks"] <= 3:
+        lib.inject_mouse_move(x, y)
+        return False, "ok", None
+    lib.inject_mouse_button(x, y, True)
+    state["mouse_pos"] = (x, y)
+    return True, "ok", "pressed at (%.0f,%.0f)" % (x, y)
+
+
+def _handle_mouse_move_to(step):
+    """Lerp the held cursor from its current position to an actor/component
+    over durationSec. Button state is untouched (use after mousePress)."""
+    sub = state["sub"]
+    lib = getattr(unreal, "ClaudeRuntimeLibrary", None)
+    if lib is None or not hasattr(lib, "inject_mouse_move"):
+        return True, "error", "ClaudeRuntimeLibrary.inject_mouse_move missing (rebuild bridge)"
+    if "move" not in sub:
+        start = state.get("mouse_pos")
+        if start is None:
+            return True, "error", "no prior mousePress/dragMouse set a cursor position"
+        end, err = _endpoint_screen_pos({"target": step.get("target", ""),
+                                         "component": step.get("component")})
+        if err:
+            return True, "error", err
+        ticks = max(int(float(step.get("durationSec", 0.6)) * 60), 10)
+        sub["move"] = {"start": start, "end": end, "ticks": ticks, "i": 0}
+    m = sub["move"]
+    m["i"] += 1
+    t = min(m["i"] / float(m["ticks"]), 1.0)
+    x = m["start"][0] + (m["end"][0] - m["start"][0]) * t
+    y = m["start"][1] + (m["end"][1] - m["start"][1]) * t
+    lib.inject_mouse_move(x, y)
+    state["mouse_pos"] = (x, y)
+    if t >= 1.0:
+        return True, "ok", "cursor at (%.0f,%.0f)" % (x, y)
+    return False, "ok", None
+
+
+def _handle_mouse_release(step):
+    """Release LMB at the current cursor position, then settle 10 ticks."""
+    sub = state["sub"]
+    lib = getattr(unreal, "ClaudeRuntimeLibrary", None)
+    if lib is None or not hasattr(lib, "inject_mouse_move"):
+        return True, "error", "ClaudeRuntimeLibrary.inject_mouse_move missing (rebuild bridge)"
+    pos = state.get("mouse_pos")
+    if pos is None:
+        return True, "error", "no cursor position to release at"
+    if "released" not in sub:
+        lib.inject_mouse_button(pos[0], pos[1], False)
+        sub["released"] = True
+        sub["settle"] = 0
+        return False, "ok", None
+    sub["settle"] += 1
+    if sub["settle"] >= 10:
+        return True, "ok", "released at (%.0f,%.0f)" % (pos[0], pos[1])
+    return False, "ok", None
+
+
+def _handle_click_mouse(step):
+    """Synthetic click on an actor/component: hover 3 ticks, press, hold 2, release, settle."""
+    sub = state["sub"]
+    lib = getattr(unreal, "ClaudeRuntimeLibrary", None)
+    if lib is None or not hasattr(lib, "inject_mouse_move"):
+        return True, "error", "ClaudeRuntimeLibrary.inject_mouse_move missing (rebuild bridge)"
+    if "click" not in sub:
+        pos, err = _endpoint_screen_pos({"target": step.get("target", ""),
+                                         "component": step.get("component")})
+        if err:
+            return True, "error", err
+        sub["click"] = {"pos": pos, "phase": "hover", "ticks": 0}
+    c = sub["click"]
+    x, y = c["pos"]
+    c["ticks"] += 1
+    if c["phase"] == "hover":
+        lib.inject_mouse_move(x, y)
+        if c["ticks"] >= 3:
+            c["phase"], c["ticks"] = "down", 0
+        return False, "ok", None
+    if c["phase"] == "down":
+        lib.inject_mouse_button(x, y, True)
+        c["phase"], c["ticks"] = "held", 0
+        return False, "ok", None
+    if c["phase"] == "held":
+        if c["ticks"] >= 2:
+            lib.inject_mouse_button(x, y, False)
+            c["phase"], c["ticks"] = "settle", 0
+        return False, "ok", None
+    if c["ticks"] >= 10:
+        return True, "ok", "clicked (%.0f,%.0f)" % (x, y)
+    return False, "ok", None
+
+
+def _handle_py_eval(step):
+    """Evaluate a Python expression with `unreal` in scope and compare its
+    str() against an optional `expect` substring. Exists so scenarios can
+    unit-test pure BlueprintFunctionLibrary helpers (e.g. grid math) without
+    routing through an actor."""
+    expr = step.get("expr", "")
+    try:
+        value = eval(expr, {"unreal": unreal})
+    except Exception as e:
+        return True, "error", "pyEval raised: %s" % e
+    sval = str(value)
+    detail = "%s = %s" % (expr[:80], sval[:2000])
+    expect = step.get("expect")
+    if expect is not None and expect not in sval:
+        return True, "mismatch", detail + " (expected to contain %r)" % expect
+    return True, "ok", detail
 
 
 def _handle_quit(step):
@@ -944,6 +1394,16 @@ HANDLERS = {
     "injectAction": _handle_inject,
     "possess": _handle_possess,
     "playRecording": _handle_play_recording,
+    "callEvent": _handle_call_event,
+    "spawnActor": _handle_spawn_actor,
+    "teleportPlayer": _handle_teleport_player,
+    "queryProperty": _handle_query_property,
+    "dragMouse": _handle_drag_mouse,
+    "clickMouse": _handle_click_mouse,
+    "mousePress": _handle_mouse_press,
+    "mouseMoveTo": _handle_mouse_move_to,
+    "mouseRelease": _handle_mouse_release,
+    "pyEval": _handle_py_eval,
     "quit": _handle_quit,
 }
 
@@ -1059,7 +1519,10 @@ def _tick(delta_seconds):
 
         step = STEPS[state["step_idx"]]
         if state["sub"] is None:
-            state["sub"] = {"started_at_game_sec": _game_seconds()}
+            state["sub"] = {
+                "started_at_game_sec": _game_seconds(),
+                "started_at_wall": time.time(),
+            }
             _log("step %d BEGIN: %s" % (state["step_idx"], step.get("type")))
 
         handler = HANDLERS.get(step.get("type"))

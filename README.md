@@ -15,8 +15,11 @@ Tested against Unreal Engine 5.5+ (5.7 in dev).
 `list-blueprints`, `read-blueprint`, `search-blueprints`,
 `list-class-properties`, `read-asset`, `generate-context`
 
-**Mutate**
-`set-blueprint-property`, `set-blueprint-properties`
+**Mutate / author**
+`set-blueprint-property`, `set-blueprint-properties` (asset properties),
+`edit-blueprint-graph` (add/wire/delete K2 graph nodes), `create-asset`
+(new Blueprint / Widget Blueprint), `add-component` (Components panel),
+`design-widget` (UMG layout)
 
 **Build / compile**
 `build-cpp` (UnrealBuildTool), `compile-blueprints` (CompileAllBlueprints commandlet)

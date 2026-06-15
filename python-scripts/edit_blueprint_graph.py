@@ -97,6 +97,61 @@ def main():
                 return None
         return None
 
+    def resolve_struct(name):
+        """Resolve a UScriptStruct from a friendly Python name ("Vector") or a path
+        ("/Script/CoreUObject.Vector", "/Game/Structs/S_Item.S_Item")."""
+        if not name:
+            return None
+        if name.startswith("/"):
+            return unreal.load_object(None, name)
+        obj = getattr(unreal, name, None)
+        if obj is not None and hasattr(obj, "static_struct"):
+            return obj.static_struct()
+        return None
+
+    # Base (non-container) types our six-primitive C++ path handles directly. Anything
+    # outside this set — text/struct/object/class, or any container — routes through
+    # BlueprintEditorLibrary's pin-type factory (pure-engine, available on 5.7).
+    SIMPLE_BASE_TYPES = {"int", "integer", "bool", "boolean", "float", "double",
+                         "real", "string", "name", "byte"}
+
+    def base_pin_type(base, type_path):
+        """Build an FEdGraphPinType for a scalar (non-container) type via BlueprintEditorLibrary."""
+        bel = unreal.BlueprintEditorLibrary
+        b = (base or "int").lower()
+        if b == "struct":
+            s = resolve_struct(type_path)
+            if s is None:
+                raise ValueError("could not resolve struct '%s'" % type_path)
+            return bel.get_struct_type(s)
+        if b == "object":
+            c = resolve_class(type_path)
+            if c is None:
+                raise ValueError("could not resolve object class '%s'" % type_path)
+            return bel.get_object_reference_type(c)
+        if b == "class":
+            c = resolve_class(type_path)
+            if c is None:
+                raise ValueError("could not resolve class '%s'" % type_path)
+            return bel.get_class_reference_type(c)
+        # Basic scalar — normalise aliases to the names get_basic_type_by_name accepts.
+        alias = {"integer": "int", "boolean": "bool", "double": "real", "float": "real"}
+        return bel.get_basic_type_by_name(alias.get(b, b))
+
+    def build_pin_type(op):
+        """Build the full FEdGraphPinType for an addMemberVariable op (scalar or container)."""
+        bel = unreal.BlueprintEditorLibrary
+        inner = base_pin_type(op.get("varType", "int"), op.get("typePath"))
+        container = (op.get("container") or "none").lower()
+        if container == "array":
+            return bel.get_array_type(inner)
+        if container == "set":
+            return bel.get_set_type(inner)
+        if container == "map":
+            value = base_pin_type(op.get("valueType", "int"), op.get("valueTypePath"))
+            return bel.get_map_type(inner, value)
+        return inner
+
     for i, op in enumerate(ops):
         rec = {"index": i, "op": op.get("op", "?")}
         try:
@@ -131,8 +186,21 @@ def main():
                 rec["ok"] = bool(GraphLib.delete_node(
                     bp, graph_name, resolve_node(op["node"])))
             elif kind == "addMemberVariable":
-                rec["ok"] = bool(GraphLib.add_member_variable(
-                    bp, op["name"], op.get("varType", "int"), str(op.get("default", ""))))
+                base = (op.get("varType") or "int").lower()
+                container = (op.get("container") or "none").lower()
+                # Scalar primitive with no explicit type path → C++ path. It also refreshes
+                # the blueprint skeleton, so get/set nodes added later in THIS batch resolve
+                # the new variable's type immediately. Complex types route through BEL.
+                is_complex = (base not in SIMPLE_BASE_TYPES
+                              or container in ("array", "set", "map")
+                              or bool(op.get("typePath")))
+                if not is_complex:
+                    rec["ok"] = bool(GraphLib.add_member_variable(
+                        bp, op["name"], base, str(op.get("default", ""))))
+                else:
+                    pin_type = build_pin_type(op)
+                    rec["ok"] = bool(unreal.BlueprintEditorLibrary.add_member_variable(
+                        bp, op["name"], pin_type))
             elif kind == "addVariableGet":
                 guid = GraphLib.add_variable_get_node(
                     bp, graph_name, op["variable"],

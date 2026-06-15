@@ -18,6 +18,8 @@ public class ClaudeBPGraphEditor : ModuleRules
         {
             "UnrealEd",        // FKismetEditorUtilities, FBlueprintEditorUtils
             "BlueprintGraph",  // UK2Node_CallFunction, UK2Node_CustomEvent
+            "UMG",             // UWidgetTree, UWidget, UPanelWidget, UCanvasPanelSlot
+            "UMGEditor",       // UWidgetBlueprint
         });
     }
 }

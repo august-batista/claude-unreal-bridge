@@ -9,6 +9,9 @@ import { registerReadAssetTool } from "./tools/read-asset.js";
 import { registerSetBlueprintPropertyTool } from "./tools/set-blueprint-property.js";
 import { registerSetBlueprintPropertiesTool } from "./tools/set-blueprint-properties.js";
 import { registerEditBlueprintGraphTool } from "./tools/edit-blueprint-graph.js";
+import { registerCreateAssetTool } from "./tools/create-asset.js";
+import { registerAddComponentTool } from "./tools/add-component.js";
+import { registerDesignWidgetTool } from "./tools/design-widget.js";
 import { registerListClassPropertiesTool } from "./tools/list-class-properties.js";
 import { registerBuildCppTool } from "./tools/build-cpp.js";
 import { registerReadLogsTool } from "./tools/read-logs.js";
@@ -18,7 +21,7 @@ import { registerResources } from "./mcp/resources.js";
 
 const server = new McpServer({
   name: "claude-unreal",
-  version: "0.4.0",
+  version: "0.5.0",
 });
 
 // Read / inspect
@@ -33,6 +36,9 @@ registerListClassPropertiesTool(server);
 registerSetBlueprintPropertyTool(server);
 registerSetBlueprintPropertiesTool(server);
 registerEditBlueprintGraphTool(server);
+registerCreateAssetTool(server);
+registerAddComponentTool(server);
+registerDesignWidgetTool(server);
 
 // Build / compile
 registerBuildCppTool(server);

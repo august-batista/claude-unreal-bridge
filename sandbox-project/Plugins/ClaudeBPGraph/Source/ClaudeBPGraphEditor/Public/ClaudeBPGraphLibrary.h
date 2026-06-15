@@ -6,6 +6,7 @@
 #include "ClaudeBPGraphLibrary.generated.h"
 
 class UBlueprint;
+class UWidgetBlueprint;
 
 /**
  * Editor-only library for programmatic Blueprint (K2) graph editing, exposed to
@@ -130,4 +131,22 @@ public:
 	 *  consumer, and each column is stacked vertically with generous spacing. Eliminates overlaps. */
 	UFUNCTION(BlueprintCallable, Category = "Claude|BP Graph")
 	static bool AutoLayoutGraph(UBlueprint* Blueprint, const FString& GraphName);
+
+	// ---- UMG widget tree (Widget Blueprints) ----
+
+	/** Construct a widget of WidgetClass named WidgetName in a Widget Blueprint's tree. If ParentName is
+	 *  None/empty the widget becomes the tree root (or is added to the existing root panel); otherwise it
+	 *  is added as a child of the named panel widget. ChildIndex < 0 appends. Returns the widget's name
+	 *  (empty on failure). */
+	UFUNCTION(BlueprintCallable, Category = "Claude|UMG")
+	static FString AddWidgetToTree(UWidgetBlueprint* WidgetBlueprint, UClass* WidgetClass, FName WidgetName, FName ParentName, int32 ChildIndex);
+
+	/** Position + size a widget that lives in a CanvasPanel slot (anchored top-left). bAutoSize lets the slot
+	 *  size to content (SizeX/SizeY then ignored). Returns false if the widget isn't in a canvas slot. */
+	UFUNCTION(BlueprintCallable, Category = "Claude|UMG")
+	static bool SetCanvasSlotLayout(UWidgetBlueprint* WidgetBlueprint, FName WidgetName, float PosX, float PosY, float SizeX, float SizeY, float AlignmentX, float AlignmentY, bool bAutoSize);
+
+	/** Debug/verify: returns "<name>|<className>|<parentName>" for each widget in the tree (parent empty = root). */
+	UFUNCTION(BlueprintCallable, Category = "Claude|UMG")
+	static TArray<FString> ListWidgets(UWidgetBlueprint* WidgetBlueprint);
 };

@@ -30,14 +30,98 @@ def to_snake_case(name):
     return name.lower()
 
 
+def _split_floats(raw):
+    return [float(x) for x in re.split(r'[,\s]+', raw.strip().strip('()')) if x]
+
+
 def coerce_value(raw, current_value):
-    """Coerce a raw string to match the type of current_value."""
+    """Coerce a raw string to match the type of current_value.
+
+    Struct formats: Vector "X,Y,Z" · Rotator "Pitch,Yaw,Roll" · colors "R,G,B[,A]".
+    Asset/object refs: any value starting with '/' is loaded via unreal.load_asset.
+    """
     if isinstance(current_value, bool):
         return raw.strip().lower() in ('true', '1', 'yes')
     if isinstance(current_value, int):
         return int(float(raw))
     if isinstance(current_value, float):
         return float(raw)
+    if isinstance(current_value, unreal.Vector):
+        p = _split_floats(raw)
+        return unreal.Vector(p[0], p[1], p[2])
+    if isinstance(current_value, unreal.Rotator):
+        p = _split_floats(raw)  # caller order: Pitch, Yaw, Roll
+        r = unreal.Rotator()
+        r.pitch, r.yaw, r.roll = p[0], p[1], p[2]
+        return r
+    if isinstance(current_value, unreal.LinearColor):
+        p = _split_floats(raw)
+        return unreal.LinearColor(p[0], p[1], p[2], p[3] if len(p) > 3 else 1.0)
+    if isinstance(current_value, unreal.Color):
+        p = [int(v) for v in _split_floats(raw)]
+        c = unreal.Color()
+        c.r, c.g, c.b, c.a = p[0], p[1], p[2], (p[3] if len(p) > 3 else 255)
+        return c
+    if isinstance(current_value, unreal.LightingChannels):
+        parts = [p.strip().lower() in ('true', '1', 'yes') for p in re.split(r'[,\s]+', raw.strip()) if p]
+        lc = unreal.LightingChannels()
+        lc.set_editor_property('channel0', parts[0])
+        lc.set_editor_property('channel1', parts[1] if len(parts) > 1 else False)
+        lc.set_editor_property('channel2', parts[2] if len(parts) > 2 else False)
+        return lc
+    if isinstance(current_value, unreal.EnumBase):
+        # Enum value by name, e.g. "Candelas" -> unreal.LightUnits.CANDELAS
+        enum_name = re.sub(r'(?<=[a-z0-9])([A-Z])', r'_\1', raw.strip()).upper()
+        val = getattr(type(current_value), enum_name, None)
+        if val is None:
+            val = getattr(type(current_value), raw.strip().upper(), None)
+        if val is None:
+            raise ValueError(f'Unknown enum value "{raw}" for {type(current_value).__name__}')
+        return val
+    raw_s = raw.strip()
+    # JSON array -> unreal.Array. "[[0,0],[1,0]]" => Array(IntPoint);
+    # "[1,2,3]" => Array(int); '["a","b"]' => Array(str).
+    if raw_s.startswith('['):
+        import json as _json
+        try:
+            data = _json.loads(raw_s)
+        except Exception as e:
+            raise ValueError('value looks like a JSON array but failed to parse: %s' % e)
+        if isinstance(data, list):
+            if data and isinstance(data[0], list) and len(data[0]) == 2:
+                arr = unreal.Array(unreal.IntPoint)
+                for pair in data:
+                    arr.append(unreal.IntPoint(int(pair[0]), int(pair[1])))
+                return arr
+            if all(isinstance(v, bool) for v in data):
+                arr = unreal.Array(bool)
+            elif all(isinstance(v, int) for v in data):
+                arr = unreal.Array(int)
+            elif all(isinstance(v, (int, float)) for v in data):
+                arr = unreal.Array(float)
+            else:
+                arr = unreal.Array(str)
+            for v in data:
+                arr.append(v)
+            return arr
+
+    if raw_s.startswith('/') and (current_value is None or isinstance(current_value, (unreal.Object, type(None)))):
+        # CDO reference, e.g. "/Game/X/Foo_DA.Default__Foo_DA_C" (object-pointer to a BP's defaults)
+        if '.Default__' in raw_s:
+            obj = unreal.load_object(None, raw_s)
+            if obj is None:
+                raise ValueError(f'Could not load CDO object "{raw_s}"')
+            return obj
+        # Class reference, e.g. "/Game/X/Foo_BP.Foo_BP_C" (TSubclassOf pins)
+        if raw_s.endswith('_C'):
+            cls = unreal.load_class(None, raw_s)
+            if cls is None:
+                raise ValueError(f'Could not load class "{raw_s}"')
+            return cls
+        loaded = unreal.load_asset(raw_s)
+        if loaded is None:
+            raise ValueError(f'Could not load asset "{raw_s}"')
+        return loaded
     # Fallback: return as string
     return raw
 
@@ -73,41 +157,60 @@ def _name_candidates(class_name):
     return candidates
 
 
-def find_component_target(bp, component_class_name):
+def find_component_target(bp, component_ref):
     """
-    Try several strategies to locate a component's edit target:
-      1. CDO get_editor_property (works for native/inherited components)
-      2. SCS template nodes (works for blueprint-added components)
+    Locate a component's edit target. `component_ref` may be either the component's
+    VARIABLE NAME (e.g. "StageBackdrop" — preferred, unambiguous) or a UE class name
+    (e.g. "CharacterMovementComponent"). Strategies, in order:
+      1. SubobjectDataSubsystem variable-name match  (blueprint-added components)
+      2. CDO get_editor_property                      (native/inherited components)
+      3. SubobjectDataSubsystem class match           (blueprint-added, by class)
     Returns (target_object, label) or (None, error_string).
     """
-    comp_class = getattr(unreal, component_class_name, None)
-    if comp_class is None:
-        return None, f'Unknown UE class: "{component_class_name}". Check spelling (e.g. CharacterMovementComponent).'
+    # Gather subobject templates once (the sanctioned editor API — the old
+    # bp.simple_construction_script route is not exposed to UE Python).
+    templates = []  # (variable_name, component_object)
+    try:
+        sds = unreal.get_engine_subsystem(unreal.SubobjectDataSubsystem)
+        lib = unreal.SubobjectDataBlueprintFunctionLibrary
+        for h in sds.k2_gather_subobject_data_for_blueprint(bp):
+            d = lib.get_data(h)
+            obj = lib.get_object(d)
+            if obj is not None and isinstance(obj, unreal.ActorComponent):
+                templates.append((str(lib.get_variable_name(d)), obj))
+    except Exception:
+        pass
 
-    # Strategy 1: native component via get_editor_property on CDO ─────────────
+    # Strategy 1: variable-name match ─────────────────────────────────────────
+    for var_name, obj in templates:
+        if var_name == component_ref:
+            return obj, f'{component_ref} ({type(obj).__name__})'
+
+    comp_class = getattr(unreal, component_ref, None)
+    if comp_class is None:
+        known = ', '.join(n for n, _ in templates) or '(none)'
+        return None, (f'"{component_ref}" is neither a component variable name on this '
+                      f'blueprint nor a UE class. Components present: {known}.')
+
+    # Strategy 2: native component via get_editor_property on CDO ─────────────
     try:
         cdo = get_cdo(bp)
-        for name in _name_candidates(component_class_name):
+        for name in _name_candidates(component_ref):
             try:
                 obj = cdo.get_editor_property(name)
                 if obj is not None and isinstance(obj, comp_class):
-                    return obj, component_class_name
+                    return obj, component_ref
             except Exception:
                 pass
     except Exception:
         pass
 
-    # Strategy 2: SCS template nodes ─────────────────────────────────────────
-    try:
-        scs = bp.simple_construction_script
-        if scs:
-            for node in scs.get_all_nodes():
-                if node.component_class and issubclass(node.component_class, comp_class):
-                    return node.component_template, component_class_name
-    except Exception:
-        pass
+    # Strategy 3: class match over subobject templates ────────────────────────
+    for var_name, obj in templates:
+        if isinstance(obj, comp_class):
+            return obj, f'{var_name} ({component_ref})'
 
-    return None, f'No {component_class_name} found on this blueprint (tried CDO property lookup and SCS nodes).'
+    return None, f'No {component_ref} found on this blueprint (tried name, CDO, and subobject class match).'
 
 
 def _apply_change(bp, component_class_name, property_name, value_str):
@@ -124,12 +227,18 @@ def _apply_change(bp, component_class_name, property_name, value_str):
                     'component': component_class_name, 'property': property_name}
         target_label = label_or_err
     else:
-        try:
-            target = get_cdo(bp)
-        except Exception as e:
-            return {'success': False, 'error': f'Failed to get CDO: {e}',
-                    'component': None, 'property': property_name}
-        target_label = '(blueprint CDO)'
+        if isinstance(bp, unreal.Blueprint):
+            try:
+                target = get_cdo(bp)
+            except Exception as e:
+                return {'success': False, 'error': f'Failed to get CDO: {e}',
+                        'component': None, 'property': property_name}
+            target_label = '(blueprint CDO)'
+        else:
+            # Non-Blueprint asset (DataAsset instance, DataTable, etc.) — set
+            # the property directly on the loaded object.
+            target = bp
+            target_label = '(%s asset)' % type(bp).__name__
 
     # ── Read current value ────────────────────────────────────────────────────
     try:
@@ -176,14 +285,13 @@ def set_property(asset_path, component_class_name, property_name, value_str):
     bp = unreal.EditorAssetLibrary.load_asset(asset_path)
     if bp is None:
         return {'success': False, 'error': f'Cannot load asset: {asset_path}'}
-    if not isinstance(bp, unreal.Blueprint):
-        return {'success': False, 'error': f'Asset is not a Blueprint: {type(bp).__name__}'}
-
     result = _apply_change(bp, component_class_name, property_name, value_str)
     if not result['success']:
         return result
 
     try:
+        if isinstance(bp, unreal.Blueprint):
+            unreal.BlueprintEditorLibrary.compile_blueprint(bp)
         unreal.EditorAssetLibrary.save_asset(asset_path, only_if_is_dirty=False)
     except Exception as e:
         return {'success': False, 'error': f'Property set but save failed: {e}'}
@@ -205,9 +313,6 @@ def set_properties_batch(asset_path, changes):
     bp = unreal.EditorAssetLibrary.load_asset(asset_path)
     if bp is None:
         return {'success': False, 'error': f'Cannot load asset: {asset_path}', 'results': []}
-    if not isinstance(bp, unreal.Blueprint):
-        return {'success': False, 'error': f'Not a Blueprint: {type(bp).__name__}', 'results': []}
-
     results = []
     any_success = False
     for change in changes:
@@ -226,6 +331,8 @@ def set_properties_batch(asset_path, changes):
     save_error = None
     if any_success:
         try:
+            if isinstance(bp, unreal.Blueprint):
+                unreal.BlueprintEditorLibrary.compile_blueprint(bp)
             unreal.EditorAssetLibrary.save_asset(asset_path, only_if_is_dirty=False)
             saved = True
         except Exception as e:

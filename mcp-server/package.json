@@ -1,6 +1,6 @@
 {
   "name": "claude-unreal-mcp",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
@@ -8,7 +8,8 @@
     "dev": "tsc --watch",
     "start": "node dist/index.js",
     "test": "tsc && node tests/verify-parsers.js && node tests/verify-mcp-primitives.js && node tests/verify-server-handshake.js",
-    "test:graph": "tsc && node tests/verify-bp-graph-edit.js"
+    "test:graph": "tsc && node tests/verify-bp-graph-edit.js",
+    "test:assets": "tsc && node tests/verify-asset-tools.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",

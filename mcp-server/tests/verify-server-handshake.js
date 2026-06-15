@@ -75,7 +75,7 @@ try {
   send({ jsonrpc: "2.0", method: "notifications/initialized" });
 
   const tools = (await request(2, "tools/list", {})).result?.tools ?? [];
-  check("lists 14 tools", tools.length === 14, tools.map((t) => t.name));
+  check("lists 17 tools", tools.length === 17, tools.map((t) => t.name));
 
   const byName = Object.fromEntries(tools.map((t) => [t.name, t]));
   check(

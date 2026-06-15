@@ -55,10 +55,29 @@ const opSchema = z.discriminatedUnion("op", [
         op: z.literal("addMemberVariable"),
         name: z.string().describe("Variable name to create on the blueprint."),
         varType: z
-            .enum(["int", "bool", "float", "string", "name", "byte"])
+            .enum(["int", "bool", "float", "string", "name", "byte", "text", "struct", "object", "class"])
             .default("int")
-            .describe("Variable type."),
-        default: z.string().optional().describe("Default value as a string, e.g. \"100\" or \"true\"."),
+            .describe("Base variable type. Primitives: int/bool/float/string/name/byte/text. Use \"struct\", \"object\" (object reference), or \"class\" (class reference) together with typePath."),
+        typePath: z
+            .string()
+            .optional()
+            .describe("For varType struct/object/class: the type — a UE Python name (\"Vector\", \"Rotator\", \"Transform\", \"Actor\") or a full path (\"/Script/Engine.Actor\", \"/Game/Structs/S_Item.S_Item\", \"/Game/BP/BP_Foo.BP_Foo_C\")."),
+        container: z
+            .enum(["none", "array", "set", "map"])
+            .default("none")
+            .describe("Container kind. For \"map\", varType/typePath describe the KEY type."),
+        valueType: z
+            .enum(["int", "bool", "float", "string", "name", "byte", "text", "struct", "object", "class"])
+            .optional()
+            .describe("Map VALUE base type (only when container is \"map\")."),
+        valueTypePath: z
+            .string()
+            .optional()
+            .describe("Map value typePath, for struct/object/class value types."),
+        default: z
+            .string()
+            .optional()
+            .describe("Default value as a string (scalar primitive types only — ignored for containers and struct/object/class)."),
     }),
     z.object({
         op: z.literal("addVariableGet"),
@@ -144,7 +163,7 @@ export function registerEditBlueprintGraphTool(server) {
         description: "Add / wire / delete nodes in a Blueprint's K2 graph, then compile and save — all in one editor session. " +
             "Op kinds: addFunctionNode, addSelfFunctionNode, addCustomEvent, addVariableGet, addVariableSet, addBranch, addSequence, addMacro (ForLoop/ForEachLoop/WhileLoop/Gate/DoOnce/FlipFlop), addCast, addMemberVariable, connect, breakPinLink (disconnect one wire), setPinDefault, deleteNode, moveNode, retargetNode (reconfigure an existing node in place: retarget a function call / cast / variable, or rename a custom event). " +
             "Operations are applied in order; nodes spawned earlier in the batch can be referenced by a local `id` (later ops use that id or an existing node GUID). " +
-            "Create a variable with addMemberVariable BEFORE adding get/set nodes that reference it. " +
+            "Create a variable with addMemberVariable BEFORE adding get/set nodes that reference it; addMemberVariable supports primitives plus struct/object/class types and array/set/map containers (via varType + typePath + container). " +
             "Pass autoLayout: true to tidy the graph (or call with empty operations + autoLayout to just re-arrange an existing graph). " +
             "Requires the ClaudeUnrealBridge plugin enabled + its editor target built in the project. " +
             "Use read-blueprint first to get existing node/pin GUIDs. Destructive: modifies the .uasset on disk (use git to roll back).",
